@@ -1,6 +1,9 @@
 MIN_LENGTH_SEQUENCE = 2
 MAX_LENGTH_SEQUENCE = 1024
 
+CANONICAL_RESIDUES = ["A", "C", "D", "E", "F", "G", "H", "I", "K", "L", 
+                      "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"]
+
 CANONICAL_EXTENDED_RESIDUES = ["A", "C", "D", "E", "F", "G", "H", "I", "K", "L", 
                       "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y", 
                       "X", "U", "Z"]
