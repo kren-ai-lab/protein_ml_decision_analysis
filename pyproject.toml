@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "building_models"
+version = "0.0.1"
+description = "Implemented library for preparing, processing, training, and applying predictive models for protein science."
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = { file = "LICENSE" }
+
+authors = [
+    { name = "Kren AI Lab", email = "krenai@umag.cl" }
+]
+
+maintainers = [
+    { name = "Kren AI Lab", email = "krenai@umag.cl" }
+]
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+keywords = [
+    "bioinformatics",
+    "etl",
+    "parser",
+    "biological datasets",
+    "protein",
+    "peptide",
+]
+
+dependencies = [
+    "pandas",
+    "tqdm",
+    "requests",
+    "rcsb-api",
+    "biopython",
+    "python-dotenv",
+    "pyyaml",
+    "typer",
+    "sylphy[all]",
+    "biosieve @ git+https://github.com/kren-ai-lab/biosieve.git@main"
+]
+
+[project.urls]
+Homepage = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science"
+Repository = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science"
+Issues = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science/issues"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/building_models"]
