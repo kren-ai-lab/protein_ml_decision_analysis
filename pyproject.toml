@@ -53,7 +53,8 @@ dependencies = [
     "typer",
     "sylphy[all]",
     "biosieve @ git+https://github.com/kren-ai-lab/biosieve.git@main",
-    "openpyxl"
+    "openpyxl",
+    "seaborn"
 ]
 
 [project.urls]

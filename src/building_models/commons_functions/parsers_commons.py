@@ -8,28 +8,7 @@ import time
 import re
 
 class ParsersCommons:
-
-    @classmethod
-    def make_directory(cls, path_directory):
-        Path(path_directory).mkdir(parents=True, exist_ok=True) 
-    
-    @classmethod
-    def checking_canonical_residues(cls, sequence, canonical_residues):
-        for residue in sequence:
-            if residue not in canonical_residues:
-                return False
-        return True
-
-    @classmethod
-    def export_json(cls, path_to_export, data_to_export):
-        with open(path_to_export, 'w') as doc_export:
-            json.dump(
-                data_to_export, 
-                doc_export,
-                indent=4,
-                default=str,
-                ensure_ascii=False)
-
+   
     @classmethod
     def read_fasta_doc(cls, doc_fasta, description=False):
 
