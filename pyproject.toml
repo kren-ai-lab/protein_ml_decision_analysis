@@ -47,12 +47,13 @@ dependencies = [
     "tqdm",
     "requests",
     "rcsb-api",
-    "biopython",
+    "biopython==1.82",
     "python-dotenv",
     "pyyaml",
     "typer",
     "sylphy[all]",
-    "biosieve @ git+https://github.com/kren-ai-lab/biosieve.git@main"
+    "biosieve @ git+https://github.com/kren-ai-lab/biosieve.git@main",
+    "openpyxl"
 ]
 
 [project.urls]
