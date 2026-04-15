@@ -134,6 +134,7 @@ def build_ids_csv(df_input: pd.DataFrame, id_col: str, out_path: Path) -> Path:
     """
     Build an ids.csv file aligned with the embedding matrix order.
     It preserves the row order of input_data.
+    The output always uses 'id' as the column name, as required by biosieve.
     """
     if id_col not in df_input.columns:
         raise ValueError(
@@ -155,9 +156,23 @@ def build_ids_csv(df_input: pd.DataFrame, id_col: str, out_path: Path) -> Path:
             "IDs must be unique to align correctly with embedding.npy."
         )
 
-    df_ids = pd.DataFrame({id_col: df_input[id_col].values})
+    # Write as 'id' — biosieve requires this column name
+    df_ids = pd.DataFrame({"id": df_input[id_col].values})
     df_ids.to_csv(out_path, index=False)
     return out_path
+
+
+def add_biosieve_id_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add a column named 'id' with values prot_0001, prot_0002, ... prot_XXXX
+    aligned with the row order of df (which must match embedding.npy order).
+    The zero-padding width is determined by the total number of rows (minimum 4 digits).
+    """
+    n = len(df)
+    pad = max(4, len(str(n)))
+    df = df.copy()
+    df["id"] = [f"prot_{str(i + 1).zfill(pad)}" for i in range(n)]
+    return df
 
 
 def main() -> None:
@@ -211,10 +226,16 @@ def main() -> None:
             f"Available columns: {df_input.columns.tolist()}"
         )
 
+    # Generate prot_XXXX id column and save a biosieve-compatible input CSV
+    df_input = add_biosieve_id_column(df_input)
+    biosieve_input_csv = output_dir / "full_data_with_biosieve_id.csv"
+    df_input.to_csv(biosieve_input_csv, index=False)
+    print(f"Saved biosieve-compatible input CSV with 'id' column at: {biosieve_input_csv}")
+
     # If ids_csv is not provided, generate it automatically from input_data
     if ids_csv is None:
         ids_csv = output_dir / "ids.csv"
-        build_ids_csv(df_input=df_input, id_col=args.id_col, out_path=ids_csv)
+        build_ids_csv(df_input=df_input, id_col="id", out_path=ids_csv)
         print(f"Generated ids.csv automatically at: {ids_csv}")
     else:
         if not ids_csv.exists():
@@ -250,7 +271,7 @@ def main() -> None:
         run_command([
             args.biosieve_exec,
             "reduce",
-            "--in", str(input_data),
+            "--in", str(biosieve_input_csv),
             "--out", str(data_nr_csv),
             "--map", str(map_csv),
             "--report", str(report_json),
@@ -265,22 +286,24 @@ def main() -> None:
 
         df_reduced = pd.read_csv(data_nr_csv)
 
-        if args.id_col not in df_reduced.columns:
+        if "id" not in df_reduced.columns:
             raise ValueError(
-                f"Column '{args.id_col}' not found in reduced data for percentile {percentile}. "
+                f"Column 'id' not found in reduced data for percentile {percentile}. "
                 f"Reduced columns: {df_reduced.columns.tolist()}"
             )
 
-        # Keep only unique mapping of id -> label from original input
-        df_labels = df_input[[args.id_col, args.label_col]].drop_duplicates()
+        # Keep mapping of prot_id -> original id_col + label
+        df_labels = df_input[["id", args.id_col, args.label_col]].drop_duplicates()
 
-        # If reduced file already contains label, preserve it but overwrite safely by merge if needed
+        # If reduced file already contains label or id_col, drop to avoid conflicts
         if args.label_col in df_reduced.columns:
             df_reduced = df_reduced.drop(columns=[args.label_col])
+        if args.id_col in df_reduced.columns:
+            df_reduced = df_reduced.drop(columns=[args.id_col])
 
         df_reduced_labeled = df_reduced.merge(
             df_labels,
-            on=args.id_col,
+            on="id",
             how="left",
         )
 
