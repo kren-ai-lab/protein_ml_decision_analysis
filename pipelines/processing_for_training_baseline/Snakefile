@@ -1,0 +1,172 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import yaml
+import pandas as pd
+
+
+OUTPUT_ROOT = config["global"]["output_root"]
+EXPERIMENTS = list(config["experiments"].keys())
+
+
+def exp_cfg(exp):
+    return config["experiments"][exp]
+
+
+def ds_cfg(exp):
+    return config["datasets"][exp_cfg(exp)["dataset"]]
+
+
+def task_cfg(exp):
+    return config["tasks"][exp_cfg(exp)["task"]]
+
+
+def represented_dir(exp):
+    return f"{OUTPUT_ROOT}/represented_dataset/{exp}"
+
+
+def split_dir(exp):
+    return f"{OUTPUT_ROOT}/split_dataset/{exp}"
+
+
+def represented_file(exp):
+    return f"{represented_dir(exp)}/full_data.csv"
+
+
+def params_yaml_path(exp):
+    return f"{split_dir(exp)}/params.yaml"
+
+
+def final_target(exp):
+    return f"{split_dir(exp)}/DONE.txt"
+
+
+rule all:
+    input:
+        [final_target(exp) for exp in EXPERIMENTS]
+
+
+rule represent_dataset:
+    input:
+        input_data=lambda wc: ds_cfg(wc.exp)["input_data"]
+    output:
+        full_data=f"{OUTPUT_ROOT}/represented_dataset/{{exp}}/full_data.csv"
+    params:
+        enabled=lambda wc: exp_cfg(wc.exp)["representation"]["enabled"],
+        method=lambda wc: exp_cfg(wc.exp)["representation"]["method"],
+        encoder=lambda wc: exp_cfg(wc.exp)["representation"].get("encoder", "one_hot"),
+        sequence_col=lambda wc: ds_cfg(wc.exp)["sequence_col"],
+        rep_dir=lambda wc: represented_dir(wc.exp),
+        encoded_output=lambda wc: f"{represented_dir(wc.exp)}/encoded.csv",
+    run:
+        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+
+        if not params.enabled:
+            raise ValueError(
+                f"Representation is disabled for experiment '{wildcards.exp}', "
+                "but this baseline workflow requires one-hot representation."
+            )
+
+        if params.method != "sylphy_one_hot":
+            raise ValueError(
+                f"Unsupported representation method '{params.method}' "
+                f"in experiment '{wildcards.exp}'. Expected 'sylphy_one_hot'."
+            )
+
+        shell(
+            r"""
+            sylphy encode-sequences run \
+              --encoder "{params.encoder}" \
+              --input-data "{input.input_data}" \
+              --sequence-identifier "{params.sequence_col}" \
+              --output "{params.encoded_output}"
+            """
+        )
+
+        input_df = pd.read_csv(input.input_data)
+        enc_df = pd.read_csv(params.encoded_output)
+
+        if len(input_df) != len(enc_df):
+            raise ValueError(
+                f"Row mismatch between input data ({len(input_df)}) and encoded output ({len(enc_df)}). "
+                "Please verify that Sylphy preserved row order."
+            )
+
+        # Eliminar columnas duplicadas de metadata que ya vienen en input_df
+        duplicated_cols = [col for col in enc_df.columns if col in input_df.columns]
+        if duplicated_cols:
+            enc_df = enc_df.drop(columns=duplicated_cols)
+
+        full_df = pd.concat(
+            [input_df.reset_index(drop=True), enc_df.reset_index(drop=True)],
+            axis=1
+        )
+
+        # Salvaguarda extra por si igual aparece alguna duplicada
+        full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+
+        full_df.to_csv(output.full_data, index=False)
+
+
+rule write_split_params:
+    input:
+        full_data=f"{OUTPUT_ROOT}/represented_dataset/{{exp}}/full_data.csv"
+    output:
+        params_yaml=f"{OUTPUT_ROOT}/split_dataset/{{exp}}/params.yaml"
+    params:
+        output_dir=lambda wc: split_dir(wc.exp),
+        strategy=lambda wc: exp_cfg(wc.exp)["splitting"]["strategy"],
+        raw_params=lambda wc: exp_cfg(wc.exp)["splitting"]["params"],
+        label_col=lambda wc: task_cfg(wc.exp)["label_col"]
+    run:
+        Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+        strategy = params.strategy
+        split_params = dict(params.raw_params)
+
+        if strategy == "stratified_kfold":
+            split_params["label_col"] = params.label_col
+
+        payload = {strategy: split_params}
+
+        with open(output.params_yaml, "w") as f:
+            yaml.safe_dump(payload, f, sort_keys=False)
+
+
+rule create_splits:
+    input:
+        full_data=f"{OUTPUT_ROOT}/represented_dataset/{{exp}}/full_data.csv",
+        params_yaml=f"{OUTPUT_ROOT}/split_dataset/{{exp}}/params.yaml"
+    output:
+        done=f"{OUTPUT_ROOT}/split_dataset/{{exp}}/DONE.txt"
+    params:
+        enabled=lambda wc: exp_cfg(wc.exp)["splitting"]["enabled"],
+        backend=lambda wc: exp_cfg(wc.exp)["splitting"]["backend"],
+        strategy=lambda wc: exp_cfg(wc.exp)["splitting"]["strategy"],
+        output_dir=lambda wc: split_dir(wc.exp)
+    run:
+        Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+        if not params.enabled:
+            with open(output.done, "w") as f:
+                f.write("splitting_disabled\n")
+            return
+
+        if params.backend != "biosieve":
+            raise ValueError(
+                f"Unsupported splitting backend '{params.backend}' "
+                f"in experiment '{wildcards.exp}'. Expected 'biosieve'."
+            )
+
+        shell(
+            r"""
+            biosieve split \
+              -i "{input.full_data}" \
+              -o "{params.output_dir}" \
+              --strategy "{params.strategy}" \
+              --params "{input.params_yaml}"
+            """
+        )
+
+        with open(output.done, "w") as f:
+            f.write("done\n")
