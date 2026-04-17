@@ -57,6 +57,9 @@ The baseline approach should be:
 - One hot as numerical representation 
 - Random split 
 
+### Generated pipelines and runing process
+
+
 ## Working with training process
 
 The training process depends of the strategy that you are looking to explore. In this work, we will be working with the following strategies:

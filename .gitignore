@@ -209,3 +209,4 @@ __marimo__/
 raw_dataset/
 processed_dataset/
 results/
+.snakemake/

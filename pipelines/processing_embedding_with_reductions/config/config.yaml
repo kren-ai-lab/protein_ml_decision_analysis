@@ -1,0 +1,52 @@
+project_name: "processing_for_training_embeddings"
+
+global:
+  output_root: "results"
+  random_state: 42
+  seed: 13
+
+dataset:
+  name: "sequences_v1"
+  input_data: "../data/sequences.csv"
+  sequence_col: "sequence"
+  id_col: "id"
+  label_col: "label"
+
+representation:
+  enabled: true
+  method: "sylphy_embedding"
+  model: "facebook/esm2_t6_8M_UR50D"
+  device: "cuda"
+  precision: "fp32"
+  batch_size: 16
+  output_format: "parquet"
+
+artifacts:
+  combined_output_format: "csv"
+
+analysis:
+  enabled: true
+  script: "../../notebooks_and_scripts/scripts_for_pipelines/embedding_analysis_space.py"
+  feature_prefix: "p_"
+  scaling_strategy: "none"
+  tsne_perplexity: 30.0
+  tsne_max_iter: 1000
+  umap_neighbors: 15
+  umap_min_dist: 0.1
+  umap_metric: "euclidean"
+  prefix: "esm2_t6"
+
+reduction:
+  enabled: true
+  script: "../../notebooks_and_scripts/scripts_for_pipelines/run_biosieve_reducers_from_percentiles.py"
+
+split:
+  enabled: true
+  strategy: "distance_aware_kfold"
+  script: "../../notebooks_and_scripts/scripts_for_pipelines/run_biosieve_splits_from_reduction_summary.py"
+  params:
+    metric: "cosine"
+    n_splits: 5
+    seed: 13
+    shuffle_ties: true
+    val_size: 0.1
