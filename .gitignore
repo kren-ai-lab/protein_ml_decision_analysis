@@ -210,3 +210,4 @@ raw_dataset/
 processed_dataset/
 results/
 .snakemake/
+numerical_representation_data/

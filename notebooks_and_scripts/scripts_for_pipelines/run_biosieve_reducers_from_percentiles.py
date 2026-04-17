@@ -283,11 +283,12 @@ def main() -> None:
         run_command([
             args.biosieve_exec,
             "reduce",
-            "--in", str(biosieve_input_csv),
-            "--out", str(data_nr_csv),
-            "--map", str(map_csv),
-            "--report", str(report_json),
+            "--input-data", str(biosieve_input_csv),
+            "--output", str(data_nr_csv),
+            "--mapping-output", str(map_csv),
+            "--report-output", str(report_json),
             "--strategy", args.strategy,
+            "--id-column", "id",
             "--params", str(reduce_yaml),
         ])
 
