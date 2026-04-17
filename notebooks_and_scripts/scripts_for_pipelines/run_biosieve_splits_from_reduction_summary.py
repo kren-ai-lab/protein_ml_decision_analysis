@@ -167,7 +167,64 @@ def get_feature_columns(df: pd.DataFrame, prefix: str) -> list[str]:
             f"No feature columns starting with '{prefix}' were found. "
             f"Available columns: {df.columns.tolist()}"
         )
-    return sorted(feature_cols, key=lambda x: int(x.split("_")[1]))
+
+    try:
+        return sorted(feature_cols, key=lambda x: int(x.split("_")[1]))
+    except Exception:
+        return sorted(feature_cols)
+
+
+def validate_full_dataframe(df: pd.DataFrame, id_col: str, label_col: str) -> None:
+    if id_col not in df.columns:
+        raise ValueError(
+            f"Column '{id_col}' not found in full-data. "
+            f"Available columns: {df.columns.tolist()}"
+        )
+
+    if label_col not in df.columns:
+        raise ValueError(
+            f"Column '{label_col}' not found in full-data. "
+            f"Available columns: {df.columns.tolist()}"
+        )
+
+    if df[id_col].isna().any():
+        n_missing = int(df[id_col].isna().sum())
+        raise ValueError(
+            f"Column '{id_col}' in full-data contains {n_missing} missing values."
+        )
+
+    if df[id_col].duplicated().any():
+        n_dup = int(df[id_col].duplicated().sum())
+        raise ValueError(
+            f"Column '{id_col}' in full-data contains {n_dup} duplicated values. "
+            "It must be unique to align embeddings correctly."
+        )
+
+
+def validate_reduced_dataframe(df: pd.DataFrame, id_col: str, label_col: str, source: Path) -> None:
+    if id_col not in df.columns:
+        raise ValueError(
+            f"Column '{id_col}' not found in {source}. "
+            f"Columns: {df.columns.tolist()}"
+        )
+
+    if label_col not in df.columns:
+        raise ValueError(
+            f"Column '{label_col}' not found in {source}. "
+            f"Columns: {df.columns.tolist()}"
+        )
+
+    if df[id_col].isna().any():
+        n_missing = int(df[id_col].isna().sum())
+        raise ValueError(
+            f"Column '{id_col}' in {source} contains {n_missing} missing values."
+        )
+
+    if df.columns.duplicated().any():
+        dup_cols = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(
+            f"{source} contains duplicated columns: {dup_cols}"
+        )
 
 
 def build_reduced_embedding_artifacts(
@@ -184,6 +241,19 @@ def build_reduced_embedding_artifacts(
             f"Available columns: {df_reduced.columns.tolist()}"
         )
 
+    if df_reduced[id_col].isna().any():
+        n_missing = int(df_reduced[id_col].isna().sum())
+        raise ValueError(
+            f"Reduced dataframe contains {n_missing} missing values in '{id_col}'."
+        )
+
+    if df_reduced[id_col].duplicated().any():
+        n_dup = int(df_reduced[id_col].duplicated().sum())
+        raise ValueError(
+            f"Reduced dataframe contains {n_dup} duplicated values in '{id_col}'. "
+            "Reduced datasets must contain unique representatives only."
+        )
+
     reduced_ids = df_reduced[id_col].tolist()
     df_full_indexed = df_full.set_index(id_col, drop=False)
 
@@ -195,6 +265,8 @@ def build_reduced_embedding_artifacts(
         )
 
     df_selected = df_full_indexed.loc[reduced_ids].copy()
+    df_selected = df_selected.loc[:, ~df_selected.columns.duplicated()]
+
     X = df_selected[feature_cols].astype(float).values
 
     np.save(out_embeddings_npy, X)
@@ -285,25 +357,9 @@ def main() -> None:
 
     df_summary = pd.read_csv(reduction_summary)
     df_full = read_table(full_data_path)
+    df_full = df_full.loc[:, ~df_full.columns.duplicated()]
 
-    if args.id_col not in df_full.columns:
-        raise ValueError(
-            f"Column '{args.id_col}' not found in full-data. "
-            f"Available columns: {df_full.columns.tolist()}"
-        )
-
-    if args.label_col not in df_full.columns:
-        raise ValueError(
-            f"Column '{args.label_col}' not found in full-data. "
-            f"Available columns: {df_full.columns.tolist()}"
-        )
-
-    if df_full[args.id_col].duplicated().any():
-        n_dup = int(df_full[args.id_col].duplicated().sum())
-        raise ValueError(
-            f"Column '{args.id_col}' in full-data contains {n_dup} duplicated values. "
-            "It must be unique to align embeddings correctly."
-        )
+    validate_full_dataframe(df=df_full, id_col=args.id_col, label_col=args.label_col)
 
     feature_cols = get_feature_columns(df_full, args.feature_prefix)
 
@@ -334,18 +390,14 @@ def main() -> None:
         print(f"\nProcessing percentile={percentile} ({run_name})")
 
         df_reduced = pd.read_csv(reduced_csv)
+        df_reduced = df_reduced.loc[:, ~df_reduced.columns.duplicated()]
 
-        if args.id_col not in df_reduced.columns:
-            raise ValueError(
-                f"Column '{args.id_col}' not found in {reduced_csv}. "
-                f"Columns: {df_reduced.columns.tolist()}"
-            )
-
-        if args.label_col not in df_reduced.columns:
-            raise ValueError(
-                f"Column '{args.label_col}' not found in {reduced_csv}. "
-                f"Columns: {df_reduced.columns.tolist()}"
-            )
+        validate_reduced_dataframe(
+            df=df_reduced,
+            id_col=args.id_col,
+            label_col=args.label_col,
+            source=reduced_csv,
+        )
 
         n_classes_reduced = df_reduced[args.label_col].dropna().nunique()
         if n_classes_reduced < 2:
@@ -391,9 +443,10 @@ def main() -> None:
             run_command([
                 args.biosieve_exec,
                 "split",
-                "--in", str(reduced_csv),
-                "--outdir", str(split_run_dir),
+                "--input-data", str(reduced_csv),
+                "--output-dir", str(split_run_dir),
                 "--strategy", args.strategy,
+                "--id-column", args.id_col,
                 "--params", str(split_yaml),
             ])
         except subprocess.CalledProcessError as e:

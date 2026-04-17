@@ -188,16 +188,18 @@ def build_ids_csv(df_input: pd.DataFrame, id_col: str, out_path: Path) -> Path:
 
 def build_biosieve_input(df_input: pd.DataFrame, id_col: str) -> pd.DataFrame:
     """
-    Ensure the table passed to biosieve contains a column named 'id'.
-    If id_col is already 'id', keep it.
-    Otherwise, duplicate id_col into a new 'id' column.
+    Return a copy of the input dataframe with a standardized column named 'id'
+    to be used by Biosieve.
+
+    If the original dataframe already contains a column named 'id', it is removed
+    before creating the standardized version from `id_col`.
     """
     df_out = df_input.copy()
 
-    if id_col != "id":
-        if "id" in df_out.columns:
-            df_out = df_out.drop(columns=["id"])
-        df_out["id"] = df_out[id_col]
+    if "id" in df_out.columns:
+        df_out = df_out.drop(columns=["id"])
+
+    df_out["id"] = df_input[id_col].values
 
     return df_out
 
@@ -305,13 +307,22 @@ def main() -> None:
                 f"Reduced columns: {df_reduced.columns.tolist()}"
             )
 
-        df_labels = biosieve_input_df[["id", args.id_col, args.label_col]].drop_duplicates()
+        label_cols = ["id", args.label_col]
+        if args.id_col != "id":
+            label_cols.append(args.id_col)
+
+        label_cols = [col for i, col in enumerate(label_cols) if col in biosieve_input_df.columns and col not in label_cols[:i]]
+
+        df_labels = biosieve_input_df[label_cols].drop_duplicates()
 
         if args.label_col in df_reduced.columns:
             df_reduced = df_reduced.drop(columns=[args.label_col])
 
-        if args.id_col in df_reduced.columns and args.id_col != "id":
+        if args.id_col != "id" and args.id_col in df_reduced.columns:
             df_reduced = df_reduced.drop(columns=[args.id_col])
+
+        df_reduced = df_reduced.loc[:, ~df_reduced.columns.duplicated()]
+        df_labels = df_labels.loc[:, ~df_labels.columns.duplicated()]
 
         df_reduced_labeled = df_reduced.merge(
             df_labels,

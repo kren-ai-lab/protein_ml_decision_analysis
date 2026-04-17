@@ -13,7 +13,7 @@ experiment:
   name: "embedding_exploring"
 
 representation:
-  enabled: true
+  enabled: false
   run_embedding: false
   method: "sylphy_embedding"
   model: "facebook/esm2_t6_8M_UR50D"
