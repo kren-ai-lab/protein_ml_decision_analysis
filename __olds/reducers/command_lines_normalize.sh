@@ -8,7 +8,6 @@ python embedding_analysis_space_normalize.py \
   --prefix ankh2-ext1 \
   --normalize
 
-
 python embedding_analysis_space_normalize.py \
   --emb-train ../../represented_dataset/ankh3-large/full_data.csv \
   --output-dir ../../analysed_space/normalized_data/ankh3-large \
