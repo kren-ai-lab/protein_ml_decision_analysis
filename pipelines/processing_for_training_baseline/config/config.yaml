@@ -1,79 +1,43 @@
-project_name: "processing_for_training_baseline"
-
 global:
   output_root: "results"
-  seed: 13
+  embedding_root: "../../numerical_representation_data/"
 
-datasets:
-  sequences_v1:
-    input_data: "../data/sequences.csv"
-    sequence_col: "sequence"
-    id_col: "id"
+dataset:
+  name: "antioxidant_proteins"
+  input_data: "../data/sequences.csv"
+  sequence_col: "sequence"
+  id_col: "id"
+  label_col: "label"
 
-tasks:
-  binary_classification:
-    label_col: "label"
+experiment:
+  name: "onehot_experiment"
 
-experiments:
-  onehot_random_kfold:
-    dataset: "sequences_v1"
-    task: "binary_classification"
+representation:
+  enabled: true
+  run_embedding: true   
+  method: "sylphy_one_hot"
+  model: "one_hot"
+  model_alias: "one_hot"
+  encoder: "one_hot"
+  output_format: "csv"
 
-    representation:
-      enabled: true
-      method: "sylphy_one_hot"
-      encoder: "one_hot"
+splits:
+  random_kfold:
+    enabled: true
+    biosieve_exec: "biosieve"
+    strategy: "random_kfold"
+    n_splits: 5
+    shuffle: true
+    seed: 13
+    val_size: 0.1
 
-    splitting:
-      enabled: true
-      backend: "biosieve"
-      strategy: "random_kfold"
-      params:
-        n_splits: 5
-        shuffle: true
-        seed: 13
-        val_size: 0.1
-
-  onehot_stratified_kfold:
-    dataset: "sequences_v1"
-    task: "binary_classification"
-
-    representation:
-      enabled: true
-      method: "sylphy_one_hot"
-      encoder: "one_hot"
-
-    splitting:
-      enabled: true
-      backend: "biosieve"
-      strategy: "stratified_kfold"
-      params:
-        n_splits: 5
-        shuffle: true
-        seed: 13
-        val_size: 0.1
-        dropna: true
-        cast_to_str: false
-
-  onehot_distance_aware_kfold:
-    dataset: "sequences_v1"
-    task: "binary_classification"
-
-    representation:
-      enabled: true
-      method: "sylphy_one_hot"
-      encoder: "one_hot"
-
-    splitting:
-      enabled: true
-      backend: "biosieve"
-      strategy: "distance_aware_kfold"
-      params:
-        feature_mode: "descriptors"
-        metric: "euclidean"
-        n_splits: 5
-        seed: 13
-        shuffle_ties: true
-        val_size: 0.1
-        descriptor_prefix: "p_"
-        standardize_descriptors: true
+  stratified_kfold:
+    enabled: true
+    biosieve_exec: "biosieve"
+    strategy: "stratified_kfold"
+    n_splits: 5
+    shuffle: true
+    seed: 13
+    val_size: 0.1
+    dropna: true
+    cast_to_str: false
