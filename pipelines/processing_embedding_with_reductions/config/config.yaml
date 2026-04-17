@@ -18,7 +18,7 @@ representation:
   model: "facebook/esm2_t6_8M_UR50D"
   device: "cuda"
   precision: "fp32"
-  batch_size: 16
+  batch_size: 8
   output_format: "parquet"
 
 artifacts:

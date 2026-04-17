@@ -68,7 +68,7 @@ rule represent_dataset:
 
         shell(
             r"""
-            sylphy get-embedding run \
+            sylphy get-embedding \
               --model "{params.model}" \
               --input-data "{input.input_data}" \
               --sequence-identifier "{params.sequence_col}" \
