@@ -67,3 +67,10 @@ The training process depends of the strategy that you are looking to explore. In
 - Integrating classic ML approaches: Just exploring traditional supervised learning algorithms with hyperparameter exploring based on grids
 - Integrating simple deep learning architectures: Just exploring simple and traditional deep learning architectures with hyperparameter exploring based on grids
 - Integrating simple fine-tuning approaches: By applying pre-trained protein language models, fine tuning could be exploring using simple partial freezing or adapters (LoRA)
+
+
+- Training with single model:
+
+```
+python training_model_external_cv.py --seed 13 --partition_strategy random_kfold --representation_strategy esm2_t6 --redundancy_strategy baseline --splits_root ../../pipelines/embedding_random_k_fold/results/split_process/random_kfold_experiment/ --output_dir demo --label_col label --feature_prefix p_ --config ../../general_configs/config_hyperparameters_algorithm.json --algorithm RandomForestClassifier
+```

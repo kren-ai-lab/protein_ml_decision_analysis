@@ -1,0 +1,270 @@
+configfile: "config.yaml"
+
+from pathlib import Path
+
+OUTPUT_ROOT = config["global"]["output_root"]
+EMBEDDING_ROOT = config["global"]["embedding_root"]
+
+DATASET_NAME = config["dataset"]["name"]
+INPUT_DATA = config["dataset"]["input_data"]
+SEQUENCE_COL = config["dataset"]["sequence_col"]
+ID_COL = config["dataset"]["id_col"]
+LABEL_COL = config["dataset"]["label_col"]
+
+EXPERIMENT_NAME = config["experiment"]["name"]
+
+REP_CFG = config["representation"]
+SPLITS_CFG = config["splits"]
+TRAIN_CFG = config["training"]
+
+
+def model_alias():
+    return REP_CFG.get("model_alias", REP_CFG["model"].split("/")[-1])
+
+
+def precision_name():
+    return REP_CFG.get("precision", "fp16")
+
+
+def embedding_store_name():
+    return f"{model_alias()}_{precision_name()}"
+
+
+def embedding_store_dir():
+    return f"{EMBEDDING_ROOT}/{DATASET_NAME}/{embedding_store_name()}"
+
+
+def embedding_ext():
+    return REP_CFG.get("output_format", "csv").lower()
+
+
+def embedding_file():
+    return f"{embedding_store_dir()}/embeddings.{embedding_ext()}"
+
+
+def embedding_full_data_file():
+    return f"{embedding_store_dir()}/full_data.csv"
+
+
+def split_dir():
+    return f"{OUTPUT_ROOT}/split_process/{EXPERIMENT_NAME}"
+
+
+def split_params_yaml():
+    return f"{split_dir()}/params_split.yaml"
+
+
+def training_dir():
+    return f"{OUTPUT_ROOT}/training_process/{EXPERIMENT_NAME}/{TRAIN_CFG['algorithm']}"
+
+
+rule all:
+    input:
+        f"{training_dir()}/training_done.txt" if TRAIN_CFG["enabled"] else f"{split_dir()}/split_done.txt"
+
+
+rule represent_dataset:
+    input:
+        input_data=INPUT_DATA
+    output:
+        emb=embedding_file(),
+        full_data=embedding_full_data_file()
+    params:
+        rep_dir=embedding_store_dir(),
+        method=REP_CFG["method"],
+        model=REP_CFG["model"],
+        device=REP_CFG.get("device", "cuda"),
+        precision=REP_CFG.get("precision", "fp16"),
+        batch_size=REP_CFG.get("batch_size", 16),
+        sequence_col=SEQUENCE_COL,
+        id_col=ID_COL,
+        label_col=LABEL_COL,
+        output_format=embedding_ext(),
+        run_embedding=REP_CFG.get("run_embedding", True),
+    run:
+        import pandas as pd
+
+        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+
+        if not REP_CFG["enabled"]:
+            raise ValueError("Representation is disabled in config.")
+
+        if params.method != "sylphy_embedding":
+            raise ValueError(f"Unsupported representation method: {params.method}")
+
+        emb_path = Path(output.emb)
+        full_data_path = Path(output.full_data)
+
+        need_generate = (
+            params.run_embedding
+            or (not emb_path.exists())
+            or (not full_data_path.exists())
+        )
+
+        if need_generate:
+            print(f"[INFO] Generating embeddings in: {params.rep_dir}")
+
+            shell(
+                r"""
+                set -euo pipefail
+                sylphy get-embedding \
+                  --model "{params.model}" \
+                  --input-data "{input.input_data}" \
+                  --sequence-identifier "{params.sequence_col}" \
+                  --output "{output.emb}" \
+                  --device {params.device} \
+                  --precision {params.precision} \
+                  --batch-size {params.batch_size}
+                """
+            )
+
+            input_df = pd.read_csv(input.input_data)
+
+            required_cols = [params.sequence_col, params.id_col, params.label_col]
+            missing_cols = [col for col in required_cols if col not in input_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Missing required columns in input data: {missing_cols}. "
+                    f"Available columns: {input_df.columns.tolist()}"
+                )
+
+            if params.output_format == "csv":
+                emb_df = pd.read_csv(output.emb)
+            elif params.output_format == "parquet":
+                emb_df = pd.read_parquet(output.emb)
+            else:
+                raise ValueError(f"Unsupported output format: {params.output_format}")
+
+            if len(input_df) != len(emb_df):
+                raise ValueError(
+                    f"Row mismatch between input ({len(input_df)}) and embeddings ({len(emb_df)})."
+                )
+
+            duplicated_cols = [col for col in emb_df.columns if col in input_df.columns]
+            if duplicated_cols:
+                emb_df = emb_df.drop(columns=duplicated_cols)
+
+            full_df = pd.concat(
+                [input_df.reset_index(drop=True), emb_df.reset_index(drop=True)],
+                axis=1
+            )
+            full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+            full_df.to_csv(output.full_data, index=False)
+
+        else:
+            print(f"[INFO] Reusing existing embeddings: {output.emb}")
+            print(f"[INFO] Reusing existing full_data: {output.full_data}")
+
+            reused_df = pd.read_csv(output.full_data)
+            required_cols = [params.sequence_col, params.id_col, params.label_col]
+            missing_cols = [col for col in required_cols if col not in reused_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Existing full_data file is missing required columns: {missing_cols}. "
+                    f"Available columns: {reused_df.columns.tolist()}"
+                )
+
+
+rule write_split_config:
+    output:
+        yaml_file=split_params_yaml()
+    params:
+        outdir=split_dir(),
+        n_splits=SPLITS_CFG.get("n_splits", 5),
+        shuffle=SPLITS_CFG.get("shuffle", True),
+        seed=SPLITS_CFG.get("seed", 13),
+        val_size=SPLITS_CFG.get("val_size", 0.1),
+    run:
+        import yaml
+
+        Path(params.outdir).mkdir(parents=True, exist_ok=True)
+
+        cfg = {
+            "random_kfold": {
+                "n_splits": int(params.n_splits),
+                "shuffle": bool(params.shuffle),
+                "seed": int(params.seed),
+                "val_size": float(params.val_size),
+            }
+        }
+
+        with open(output.yaml_file, "w") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+
+
+rule create_random_splits:
+    input:
+        full_data=embedding_full_data_file(),
+        params_yaml=split_params_yaml()
+    output:
+        done=f"{split_dir()}/split_done.txt"
+    params:
+        outdir=split_dir(),
+        biosieve_exec=SPLITS_CFG.get("biosieve_exec", "biosieve"),
+        strategy=SPLITS_CFG.get("strategy", "random_kfold"),
+        id_col=ID_COL,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.outdir}"
+
+        {params.biosieve_exec} split \
+          -i "{input.full_data}" \
+          -o "{params.outdir}" \
+          --strategy "{params.strategy}" \
+          --id-column "{params.id_col}" \
+          --params "{input.params_yaml}"
+
+        touch "{output.done}"
+        """
+
+rule run_training:
+    input:
+        split_done=f"{split_dir()}/split_done.txt"
+    output:
+        csv=f"{training_dir()}/exploration_by_fold_{TRAIN_CFG['algorithm']}.csv",
+        log=f"{training_dir()}/status_{TRAIN_CFG['algorithm']}.log",
+        done=f"{training_dir()}/training_done.txt"
+    params:
+        splits_root=split_dir(),
+        outdir=training_dir(),
+        script=TRAIN_CFG["script"],
+        algorithm=TRAIN_CFG["algorithm"],
+        config_path=TRAIN_CFG["config"],
+        seed=TRAIN_CFG.get("seed", 13),
+        partition_strategy=TRAIN_CFG.get(
+            "partition_strategy",
+            SPLITS_CFG.get("strategy", "random_kfold")
+        ),
+        representation_strategy=TRAIN_CFG.get(
+            "representation_strategy",
+            model_alias()
+        ),
+        redundancy_strategy=TRAIN_CFG.get(
+            "redundancy_strategy",
+            "no_reduction"
+        ),
+        feature_prefix=TRAIN_CFG.get("feature_prefix", "p_"),
+        scaler_flag="--use_scaler" if TRAIN_CFG.get("use_scaler", False) else "",
+        timestamp_flag="--timestamp" if TRAIN_CFG.get("timestamp", False) else "",
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.outdir}"
+
+        python "{params.script}" \
+          --seed "{params.seed}" \
+          --partition_strategy "{params.partition_strategy}" \
+          --representation_strategy "{params.representation_strategy}" \
+          --redundancy_strategy "{params.redundancy_strategy}" \
+          --splits_root "{params.splits_root}" \
+          --output_dir "{params.outdir}" \
+          --label_col "{LABEL_COL}" \
+          --feature_prefix "{params.feature_prefix}" \
+          --config "{params.config_path}" \
+          --algorithm "{params.algorithm}" \
+          {params.scaler_flag} \
+          {params.timestamp_flag}
+
+        touch "{output.done}"
+        """
