@@ -51,6 +51,13 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from sklearn.preprocessing import (
+    MinMaxScaler, 
+    MaxAbsScaler, 
+    Normalizer, 
+    RobustScaler,
+    StandardScaler
+)
 
 import pandas as pd
 from sklearn.base import clone
@@ -76,7 +83,6 @@ from sklearn.metrics import (
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC, SVC
 from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier
 
@@ -160,11 +166,18 @@ def build_argparser() -> argparse.ArgumentParser:
         type=str,
         help="Classifier name to train.",
     )
+    
     p.add_argument(
-        "--use_scaler",
-        action="store_true",
-        help="Use StandardScaler before the classifier.",
+        "--scaler",
+        default="none",
+        choices=["none", "standard", "minmax", "robust", "maxabs", "normalizer_l2"],
+        type=str,
+        help=(
+            "Scaling strategy to apply before the classifier. "
+            "Options: none, standard, minmax, robust, normalizer_l2, maxabs"
+        )
     )
+
     p.add_argument(
         "--timestamp",
         action="store_true",
@@ -192,6 +205,26 @@ def setup_logger(log_path: Path) -> logging.Logger:
     logger.addHandler(ch)
     return logger
 
+def get_scaler(scaler_name: str):
+    """
+    Return the preprocessing object associated with the requested strategy.
+    """
+    registry = {
+        "none": None,
+        "standard": StandardScaler(),
+        "minmax": MinMaxScaler(),
+        "robust": RobustScaler(),
+        "normalizer_l2": Normalizer(norm="l2"),
+        "maxabs" : MaxAbsScaler(),
+    }
+
+    if scaler_name not in registry:
+        raise ValueError(
+            f"Unknown scaler: {scaler_name}. "
+            f"Available: {', '.join(registry.keys())}"
+        )
+
+    return registry[scaler_name]
 
 def get_model_class(algorithm: str):
     registry = {
@@ -279,17 +312,18 @@ def split_xy(
     return X, y
 
 
-def build_pipeline(model: Any, use_scaler: bool) -> Pipeline:
-    if use_scaler:
+def build_pipeline(model: Any, scaler_name: str) -> Pipeline:
+    scaler = get_scaler(scaler_name)
+
+    if scaler is not None:
         return Pipeline([
-            ("scaler", StandardScaler()),
+            ("scaler", scaler),
             ("classifier", model),
         ])
 
     return Pipeline([
         ("classifier", model),
     ])
-
 
 def load_param_grid(config_path: Path, algorithm: str) -> list[dict[str, Any]]:
     with open(config_path, "r", encoding="utf-8") as f:
@@ -420,7 +454,7 @@ def main() -> None:
 
             try:
                 model = model_class(**config)
-                pipeline = build_pipeline(clone(model), args.use_scaler)
+                pipeline = build_pipeline(clone(model), args.scaler)
                 pipeline.fit(X_train, y_train)
 
                 y_pred_val = pipeline.predict(X_val)
@@ -440,7 +474,7 @@ def main() -> None:
                     "config": json.dumps(config, ensure_ascii=False, sort_keys=True),
                     "n_features": len(feature_cols),
                     "feature_prefix": args.feature_prefix,
-                    "use_scaler": args.use_scaler,
+                    "scaler": args.scaler,
                     "n_train": len(X_train),
                     "n_val": len(X_val),
                     "n_test": len(X_test),

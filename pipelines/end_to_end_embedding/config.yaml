@@ -42,5 +42,5 @@ training:
   representation_strategy: "esm2_t6_8M_UR50D"
   redundancy_strategy: "no_reduction"
   feature_prefix: "p_"
-  use_scaler: false
+  scaler: "normalizer_l2"
   timestamp: false

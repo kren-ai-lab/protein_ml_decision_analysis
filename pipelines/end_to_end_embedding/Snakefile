@@ -245,7 +245,7 @@ rule run_training:
             "no_reduction"
         ),
         feature_prefix=TRAIN_CFG.get("feature_prefix", "p_"),
-        scaler_flag="--use_scaler" if TRAIN_CFG.get("use_scaler", False) else "",
+        scaler= TRAIN_CFG.get("scaler", "normalizer_l2"),
         timestamp_flag="--timestamp" if TRAIN_CFG.get("timestamp", False) else "",
     shell:
         r"""
@@ -263,7 +263,7 @@ rule run_training:
           --feature_prefix "{params.feature_prefix}" \
           --config "{params.config_path}" \
           --algorithm "{params.algorithm}" \
-          {params.scaler_flag} \
+          --scaler "{params.scaler}" \
           {params.timestamp_flag}
 
         touch "{output.done}"
