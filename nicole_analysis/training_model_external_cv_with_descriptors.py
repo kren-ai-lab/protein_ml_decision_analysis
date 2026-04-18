@@ -36,6 +36,9 @@ Main behavior:
 
 from __future__ import annotations
 
+import warnings
+warnings.filterwarnings("ignore")
+
 import argparse
 import json
 import logging
@@ -59,15 +62,24 @@ from sklearn.gaussian_process import GaussianProcessClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
+    confusion_matrix,
     f1_score,
     matthews_corrcoef,
     precision_score,
     recall_score,
 )
+
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import (
+    StandardScaler,
+    MinMaxScaler,
+    RobustScaler,
+    Normalizer,
+    MaxAbsScaler,
+)
+
 from sklearn.svm import LinearSVC, SVC
 from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier
 
@@ -167,9 +179,14 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Classifier name to train.",
     )
     p.add_argument(
-        "--use_scaler",
-        action="store_true",
-        help="Use StandardScaler before the classifier.",
+        "--scaler",
+        default="none",
+        choices=["none", "standard", "minmax", "robust", "normalizer_l2", "maxabs"],
+        type=str,
+        help=(
+            "Preprocessing strategy to apply before the classifier. "
+            "Options: none, standard, minmax, robust, normalizer_l2, maxabs."
+        ),
     )
     p.add_argument(
         "--timestamp",
@@ -178,6 +195,35 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     return p
 
+def confusion_counts(y_true: pd.Series, y_pred: pd.Series) -> dict[str, int]:
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+    }
+
+def get_scaler(scaler_name: str):
+    """
+    Return the preprocessing object associated with the requested strategy.
+    """
+    registry = {
+        "none": None,
+        "standard": StandardScaler(),
+        "minmax": MinMaxScaler(),
+        "robust": RobustScaler(),
+        "normalizer_l2": Normalizer(norm="l2"),
+        "maxabs" : MaxAbsScaler(),
+    }
+
+    if scaler_name not in registry:
+        raise ValueError(
+            f"Unknown scaler: {scaler_name}. "
+            f"Available: {', '.join(registry.keys())}"
+        )
+
+    return registry[scaler_name]
 
 def setup_logger(log_path: Path) -> logging.Logger:
     logger = logging.getLogger("trainer_external_cv_with_descriptors")
@@ -285,10 +331,12 @@ def split_xy(
     return X, y
 
 
-def build_pipeline(model: Any, use_scaler: bool) -> Pipeline:
-    if use_scaler:
+def build_pipeline(model: Any, scaler_name: str) -> Pipeline:
+    scaler = get_scaler(scaler_name)
+
+    if scaler is not None:
         return Pipeline([
-            ("scaler", StandardScaler()),
+            ("scaler", scaler),
             ("classifier", model),
         ])
 
@@ -489,7 +537,7 @@ def main() -> None:
 
             try:
                 model = model_class(**config)
-                pipeline = build_pipeline(clone(model), args.use_scaler)
+                pipeline = build_pipeline(clone(model), args.scaler)
                 pipeline.fit(X_train, y_train)
 
                 y_pred_val = pipeline.predict(X_val)
@@ -497,6 +545,9 @@ def main() -> None:
 
                 metrics_val = safe_metrics(y_val, y_pred_val)
                 metrics_test = safe_metrics(y_test, y_pred_test)
+
+                cm_val = confusion_counts(y_val, y_pred_val)
+                cm_test = confusion_counts(y_test, y_pred_test)
 
                 row: dict[str, Any] = {
                     "seed": args.seed,
@@ -511,7 +562,7 @@ def main() -> None:
                     "descriptor_file": str(args.descriptor_file),
                     "n_features": len(feature_cols),
                     "feature_prefix": args.feature_prefix,
-                    "use_scaler": args.use_scaler,
+                    "scaler": args.scaler,
                     "n_train": len(X_train),
                     "n_val": len(X_val),
                     "n_test": len(X_test),
@@ -528,6 +579,11 @@ def main() -> None:
                 for metric_name, value in metrics_test.items():
                     row[f"{metric_name}_test"] = value
 
+                for count_name, value in cm_val.items():
+                    row[f"{count_name}_val"] = value
+                for count_name, value in cm_test.items():
+                    row[f"{count_name}_test"] = value
+                    
                 results_by_fold.append(row)
 
             except Exception as exc:
