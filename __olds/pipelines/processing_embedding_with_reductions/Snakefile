@@ -1,0 +1,283 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+
+OUTPUT_ROOT = config["global"]["output_root"]
+EMBEDDING_ROOT = config["global"]["embedding_root"]
+
+DATASET_NAME = config["dataset"]["name"]
+INPUT_DATA = config["dataset"]["input_data"]
+SEQUENCE_COL = config["dataset"]["sequence_col"]
+ID_COL = config["dataset"]["id_col"]
+LABEL_COL = config["dataset"]["label_col"]
+
+EXPERIMENT_NAME = config["experiment"]["name"]
+
+REP_CFG = config["representation"]
+ANALYSIS_CFG = config["analysis"]
+REDUCTION_CFG = config["reduction"]
+SPLITS_CFG = config["splits"]
+
+
+def model_alias():
+    return REP_CFG.get("model_alias", REP_CFG["model"].split("/")[-1])
+
+
+def precision_name():
+    return REP_CFG.get("precision", "fp16")
+
+
+def embedding_store_name():
+    return f"{model_alias()}_{precision_name()}"
+
+
+def embedding_store_dir():
+    return f"{EMBEDDING_ROOT}/{DATASET_NAME}/{embedding_store_name()}"
+
+
+def experiment_analysis_dir():
+    return f"{OUTPUT_ROOT}/analysed_embedding_space/{EXPERIMENT_NAME}"
+
+
+def experiment_reduction_dir():
+    return f"{OUTPUT_ROOT}/reduced_embeddings/{EXPERIMENT_NAME}"
+
+
+def experiment_split_dir():
+    return f"{OUTPUT_ROOT}/split_process/{EXPERIMENT_NAME}"
+
+
+def embedding_ext():
+    return REP_CFG.get("output_format", "csv").lower()
+
+
+def embedding_file():
+    return f"{embedding_store_dir()}/embeddings.{embedding_ext()}"
+
+
+def embedding_full_data_file():
+    return f"{embedding_store_dir()}/full_data.csv"
+
+
+rule all:
+    input:
+        f"{experiment_split_dir()}/split_summary.csv"
+
+
+rule represent_dataset:
+    input:
+        input_data=INPUT_DATA
+    output:
+        emb=embedding_file(),
+        full_data=embedding_full_data_file()
+    params:
+        rep_dir=embedding_store_dir(),
+        method=REP_CFG["method"],
+        model=REP_CFG["model"],
+        model_alias=model_alias(),
+        device=REP_CFG.get("device", "cuda"),
+        precision=REP_CFG.get("precision", "fp16"),
+        batch_size=REP_CFG.get("batch_size", 16),
+        sequence_col=SEQUENCE_COL,
+        id_col=ID_COL,
+        label_col=LABEL_COL,
+        output_format=embedding_ext(),
+        run_embedding=REP_CFG.get("run_embedding", True),
+    run:
+        import pandas as pd
+
+        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+
+        if not REP_CFG["enabled"]:
+            raise ValueError("Representation is disabled in config.")
+
+        if params.method != "sylphy_embedding":
+            raise ValueError(f"Unsupported representation method: {params.method}")
+
+        emb_path = Path(output.emb)
+        full_data_path = Path(output.full_data)
+
+        need_generate = (
+            params.run_embedding
+            or (not emb_path.exists())
+            or (not full_data_path.exists())
+        )
+
+        if need_generate:
+            print(f"[INFO] Generating embeddings in: {params.rep_dir}")
+
+            shell(
+                r"""
+                set -euo pipefail
+                sylphy get-embedding \
+                  --model "{params.model}" \
+                  --input-data "{input.input_data}" \
+                  --sequence-identifier "{params.sequence_col}" \
+                  --output "{output.emb}" \
+                  --device {params.device} \
+                  --precision {params.precision} \
+                  --batch-size {params.batch_size}
+                """
+            )
+
+            input_df = pd.read_csv(input.input_data)
+
+            required_cols = [params.sequence_col, params.id_col, params.label_col]
+            missing_cols = [col for col in required_cols if col not in input_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Missing required columns in input data: {missing_cols}. "
+                    f"Available columns: {input_df.columns.tolist()}"
+                )
+
+            if params.output_format == "csv":
+                emb_df = pd.read_csv(output.emb)
+            elif params.output_format == "parquet":
+                emb_df = pd.read_parquet(output.emb)
+            else:
+                raise ValueError(f"Unsupported output format: {params.output_format}")
+
+            if len(input_df) != len(emb_df):
+                raise ValueError(
+                    f"Row mismatch between input ({len(input_df)}) and embeddings ({len(emb_df)})."
+                )
+
+            duplicated_cols = [col for col in emb_df.columns if col in input_df.columns]
+            if duplicated_cols:
+                emb_df = emb_df.drop(columns=duplicated_cols)
+
+            full_df = pd.concat(
+                [input_df.reset_index(drop=True), emb_df.reset_index(drop=True)],
+                axis=1
+            )
+            full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+            full_df.to_csv(output.full_data, index=False)
+
+        else:
+            print(f"[INFO] Reusing existing embeddings: {output.emb}")
+            print(f"[INFO] Reusing existing full_data: {output.full_data}")
+
+            reused_df = pd.read_csv(output.full_data)
+            required_cols = [params.sequence_col, params.id_col, params.label_col]
+            missing_cols = [col for col in required_cols if col not in reused_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Existing full_data file is missing required columns: {missing_cols}. "
+                    f"Available columns: {reused_df.columns.tolist()}"
+                )
+
+
+rule analyse_embedding_space:
+    input:
+        full_data=embedding_full_data_file()
+    output:
+        npy=f"{experiment_analysis_dir()}/artifacts/training_embeddings.npy",
+        percentiles=f"{experiment_analysis_dir()}/tables/{ANALYSIS_CFG.get('prefix', 'embedding_analysis')}_similarity_percentiles.csv"
+    params:
+        output_dir=experiment_analysis_dir(),
+        script=ANALYSIS_CFG["script"],
+        sequence_col=SEQUENCE_COL,
+        label_col=LABEL_COL,
+        id_col=ID_COL,
+        feature_prefix=ANALYSIS_CFG.get("feature_prefix", "p_"),
+        prefix=ANALYSIS_CFG.get("prefix", "embedding_analysis"),
+        random_state=ANALYSIS_CFG.get("random_state", 42),
+        tsne_perplexity=ANALYSIS_CFG.get("tsne_perplexity", 30.0),
+        tsne_max_iter=ANALYSIS_CFG.get("tsne_max_iter", 1000),
+        umap_neighbors=ANALYSIS_CFG.get("umap_neighbors", 15),
+        umap_min_dist=ANALYSIS_CFG.get("umap_min_dist", 0.1),
+        umap_metric=ANALYSIS_CFG.get("umap_metric", "euclidean"),
+        scaling_strategy=ANALYSIS_CFG.get("scaling_strategy", "none"),
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.output_dir}"
+        python "{params.script}" \
+          --emb-train "{input.full_data}" \
+          --output-dir "{params.output_dir}" \
+          --label-col "{params.label_col}" \
+          --sequence-col "{params.sequence_col}" \
+          --id-col "{params.id_col}" \
+          --feature-prefix "{params.feature_prefix}" \
+          --prefix "{params.prefix}" \
+          --random-state {params.random_state} \
+          --tsne-perplexity {params.tsne_perplexity} \
+          --tsne-max-iter {params.tsne_max_iter} \
+          --umap-neighbors {params.umap_neighbors} \
+          --umap-min-dist {params.umap_min_dist} \
+          --umap-metric "{params.umap_metric}" \
+          --scaling-strategy "{params.scaling_strategy}"
+        """
+
+
+rule reduce_embeddings:
+    input:
+        full_data=embedding_full_data_file(),
+        embedding_npy=f"{experiment_analysis_dir()}/artifacts/training_embeddings.npy",
+        percentiles=f"{experiment_analysis_dir()}/tables/{ANALYSIS_CFG.get('prefix', 'embedding_analysis')}_similarity_percentiles.csv"
+    output:
+        reduction_summary=f"{experiment_reduction_dir()}/reduction_summary.csv"
+    params:
+        output_dir=experiment_reduction_dir(),
+        script=REDUCTION_CFG["script"],
+        biosieve_exec=REDUCTION_CFG.get("biosieve_exec", "biosieve"),
+        strategy=REDUCTION_CFG.get("strategy", "embedding_cosine"),
+        n_jobs=REDUCTION_CFG.get("n_jobs", 8),
+        label_col=LABEL_COL,
+        id_col=ID_COL,
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.output_dir}"
+        python "{params.script}" \
+          --embedding-npy "{input.embedding_npy}" \
+          --percentiles-csv "{input.percentiles}" \
+          --input-data "{input.full_data}" \
+          --output-dir "{params.output_dir}" \
+          --label-col "{params.label_col}" \
+          --id-col "{params.id_col}" \
+          --biosieve-exec "{params.biosieve_exec}" \
+          --strategy "{params.strategy}" \
+          --n-jobs {params.n_jobs}
+        """
+
+
+rule create_splits:
+    input:
+        full_data=embedding_full_data_file(),
+        reduction_summary=f"{experiment_reduction_dir()}/reduction_summary.csv"
+    output:
+        split_summary=f"{experiment_split_dir()}/split_summary.csv"
+    params:
+        output_dir=experiment_split_dir(),
+        reduction_dir=experiment_reduction_dir(),
+        script=SPLITS_CFG["script"],
+        biosieve_exec=SPLITS_CFG.get("biosieve_exec", "biosieve"),
+        strategy=SPLITS_CFG.get("strategy", "distance_aware_kfold"),
+        label_col=LABEL_COL,
+        id_col=ID_COL,
+        feature_prefix=ANALYSIS_CFG.get("feature_prefix", "p_"),
+        n_splits=SPLITS_CFG.get("n_splits", 5),
+        seed=SPLITS_CFG.get("seed", 13),
+        val_size=SPLITS_CFG.get("val_size", 0.1),
+        metric=SPLITS_CFG.get("metric", "cosine"),
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.output_dir}"
+        python "{params.script}" \
+          --reduction-summary "{input.reduction_summary}" \
+          --reduction-dir "{params.reduction_dir}" \
+          --full-data "{input.full_data}" \
+          --output-dir "{params.output_dir}" \
+          --label-col "{params.label_col}" \
+          --id-col "{params.id_col}" \
+          --feature-prefix "{params.feature_prefix}" \
+          --n-splits {params.n_splits} \
+          --seed {params.seed} \
+          --val-size {params.val_size} \
+          --metric "{params.metric}" \
+          --biosieve-exec "{params.biosieve_exec}" \
+          --strategy "{params.strategy}" \
+          --shuffle-ties
+        """

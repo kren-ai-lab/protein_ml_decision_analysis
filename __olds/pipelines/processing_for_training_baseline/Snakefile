@@ -1,0 +1,189 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import yaml
+import pandas as pd
+
+
+# ========================
+# CONFIG
+# ========================
+
+OUTPUT_ROOT = config["global"]["output_root"]
+REP_ROOT = config["global"].get("embedding_root", "../../numerical_representation_data").rstrip("/")
+
+DATASET_CFG = config["dataset"]
+EXPERIMENT_CFG = config["experiment"]
+REP_CFG = config["representation"]
+SPLITS_CFG = config["splits"]
+
+DATASET_NAME = DATASET_CFG["name"]
+INPUT_DATA = DATASET_CFG["input_data"]
+SEQUENCE_COL = DATASET_CFG["sequence_col"]
+LABEL_COL = DATASET_CFG["label_col"]
+
+EXPERIMENT_NAME = EXPERIMENT_CFG["name"]
+
+
+# ========================
+# PATHS
+# ========================
+
+def enabled_splits():
+    return [name for name, cfg in SPLITS_CFG.items() if cfg["enabled"]]
+
+
+def representation_dir():
+    method = REP_CFG["method"]
+    model_alias = REP_CFG.get("model_alias", method)
+    return f"{REP_ROOT}/{DATASET_NAME}/{method}/{model_alias}"
+
+
+ENCODED_FILE = f"{representation_dir()}/encoded.csv"
+REPRESENTED_FILE = f"{representation_dir()}/full_data.csv"
+
+
+# ========================
+# RULE ALL
+# ========================
+
+rule all:
+    input:
+        expand(
+            f"{OUTPUT_ROOT}/split_dataset/{EXPERIMENT_NAME}" + "/{split_name}/DONE.txt",
+            split_name=enabled_splits()
+        )
+
+
+# ========================
+# REPRESENTATION
+# ========================
+
+rule represent_dataset:
+    input:
+        INPUT_DATA
+    output:
+        REPRESENTED_FILE
+    params:
+        enabled=REP_CFG["enabled"],
+        run_encoding=REP_CFG.get("run_encoding", REP_CFG.get("run_embedding", False)),
+        method=REP_CFG["method"],
+        encoder=REP_CFG.get("encoder", "one_hot"),
+        rep_dir=representation_dir()
+    run:
+        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+
+        if not params.enabled or not params.run_encoding:
+            if Path(output[0]).exists():
+                return
+            raise ValueError(
+                f"Representation disabled and file not found: {output[0]}"
+            )
+
+        if params.method != "sylphy_one_hot":
+            raise ValueError(
+                f"Unsupported representation method '{params.method}'. Expected 'sylphy_one_hot'."
+            )
+
+        if Path(output[0]).exists():
+            return
+
+        shell(
+            r"""
+            sylphy encode-sequences \
+              --encoder "{params.encoder}" \
+              --input-data "{input}" \
+              --sequence-identifier "{SEQUENCE_COL}" \
+              --output "{ENCODED_FILE}"
+            """
+        )
+
+        # Merge input + encoding
+        input_df = pd.read_csv(input[0])
+        enc_df = pd.read_csv(ENCODED_FILE)
+
+        if len(input_df) != len(enc_df):
+            raise ValueError("Row mismatch between input and encoded data")
+
+        duplicated_cols = [c for c in enc_df.columns if c in input_df.columns]
+        if duplicated_cols:
+            enc_df = enc_df.drop(columns=duplicated_cols)
+
+        full_df = pd.concat(
+            [input_df.reset_index(drop=True), enc_df.reset_index(drop=True)],
+            axis=1
+        )
+
+        full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+        full_df.to_csv(output[0], index=False)
+
+
+# ========================
+# WRITE PARAMS
+# ========================
+
+rule write_split_params:
+    input:
+        REPRESENTED_FILE
+    output:
+        f"{OUTPUT_ROOT}/split_dataset/{EXPERIMENT_NAME}" + "/{split_name}/params.yaml"
+    params:
+        split_cfg=lambda wc: SPLITS_CFG[wc.split_name],
+        label_col=LABEL_COL
+    run:
+        outdir = Path(output[0]).parent
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        strategy = params.split_cfg["strategy"]
+
+        split_params = {
+            k: v
+            for k, v in params.split_cfg.items()
+            if k not in {"enabled", "biosieve_exec", "strategy"}
+        }
+
+        if strategy == "stratified_kfold":
+            split_params["label_col"] = params.label_col
+
+        payload = {strategy: split_params}
+
+        with open(output[0], "w") as f:
+            yaml.safe_dump(payload, f, sort_keys=False)
+
+
+# ========================
+# CREATE SPLITS
+# ========================
+
+rule create_split:
+    input:
+        full_data=REPRESENTED_FILE,
+        params_yaml=f"{OUTPUT_ROOT}/split_dataset/{EXPERIMENT_NAME}" + "/{split_name}/params.yaml"
+    output:
+        f"{OUTPUT_ROOT}/split_dataset/{EXPERIMENT_NAME}" + "/{split_name}/DONE.txt"
+    params:
+        split_cfg=lambda wc: SPLITS_CFG[wc.split_name]
+    run:
+        outdir = Path(output[0]).parent
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        if not params.split_cfg["enabled"]:
+            with open(output[0], "w") as f:
+                f.write("disabled\n")
+            return
+
+        biosieve_exec = params.split_cfg.get("biosieve_exec", "biosieve")
+        strategy = params.split_cfg["strategy"]
+
+        shell(
+            r"""
+            {biosieve_exec} split \
+              -i "{input.full_data}" \
+              -o "{outdir}" \
+              --strategy "{strategy}" \
+              --params "{input.params_yaml}"
+            """
+        )
+
+        with open(output[0], "w") as f:
+            f.write("done\n")

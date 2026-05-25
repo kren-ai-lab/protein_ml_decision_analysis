@@ -1,0 +1,46 @@
+global:
+  output_root: "results"
+  embedding_root: "../../numerical_representation_data/"
+
+dataset:
+  name: "antioxidant_proteins"
+  input_data: "../data/sequences.csv"
+  sequence_col: "sequence"
+  id_col: "id"
+  label_col: "label"
+
+experiment:
+  name: "random_kfold_experiment"
+
+representation:
+  enabled: false
+  run_embedding: false
+  method: "sylphy_embedding"
+  model: "facebook/esm2_t6_8M_UR50D"
+  model_alias: "esm2_t6_8M_UR50D"
+  device: "cuda"
+  precision: "fp32"
+  batch_size: 16
+  output_format: "csv"
+
+splits:
+  enabled: true
+  biosieve_exec: "biosieve"
+  strategy: "random_kfold"
+  n_splits: 5
+  shuffle: true
+  seed: 13
+  val_size: 0.1
+
+training:
+  enabled: true
+  script: "../../notebooks_and_scripts/scripts_for_pipelines/training_model_external_cv.py"
+  algorithm: "LogisticRegression"
+  config: "../../general_configs/config_hyperparameters_algorithm.json"
+  seed: 13
+  partition_strategy: "random_kfold"
+  representation_strategy: "esm2_t6_8M_UR50D"
+  redundancy_strategy: "no_reduction"
+  feature_prefix: "p_"
+  scaler: "normalizer_l2"
+  timestamp: false
