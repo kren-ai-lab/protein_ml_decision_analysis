@@ -1,0 +1,1428 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import shutil
+import json
+import subprocess
+from datetime import datetime
+import pandas as pd
+import yaml
+
+
+
+
+def as_bool(value, default=False):
+    """Parse booleans robustly from YAML/CLI values.
+
+    This avoids Python's bool("false") == True behavior, which can
+    accidentally activate cleanup or other optional stages.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
+
+# ============================================================
+# Config
+# ============================================================
+
+GLOBAL_CFG = config.get("global", {})
+DATASET_CFG = config.get("dataset", {})
+REPS_CFG = config.get("representations", {})
+SOURCES_CFG = config.get("split_sources", {})
+STRATEGIES_CFG = config.get("split_strategies", {})
+CROSS_CFG = config.get("cross_features", {})
+OUTPUT_CFG = config.get("output", {})
+VALIDATION_CFG = config.get("validation", {})
+ANALYSIS_CFG = config.get("analysis", {})
+ANALYSIS_ENABLED = as_bool(ANALYSIS_CFG.get("enabled", False))
+CLEANUP_CFG = config.get("cleanup", {})
+CLEANUP_MATERIALIZED = as_bool(CLEANUP_CFG.get("remove_materialized_inputs", False))
+
+OUTPUT_ROOT = Path(GLOBAL_CFG.get("output_root", ".")).resolve()
+REP_ROOT = Path(GLOBAL_CFG.get("representation_root", "../../numerical_representation_data")).resolve()
+REDUCTION_ROOT = Path(GLOBAL_CFG.get("reduction_root", "../..")).resolve()
+
+DATASET_NAME = DATASET_CFG["name"]
+INPUT_DATA = Path(DATASET_CFG["input_data"]).resolve()
+SEQUENCE_COL = DATASET_CFG.get("sequence_col", "sequence")
+ID_COL = DATASET_CFG.get("id_col", "id")
+LABEL_COL = DATASET_CFG.get("label_col", "label")
+
+SEEDS_FILE = Path(GLOBAL_CFG["seeds_file"]).resolve()
+SEEDS = pd.read_csv(SEEDS_FILE)["seed"].dropna().astype(int).tolist()
+
+SPLIT_ROOT_BASE = Path(OUTPUT_CFG.get("root", OUTPUT_ROOT / "split_process"))
+INCLUDE_DATASET_FOLDER = as_bool(OUTPUT_CFG.get("include_dataset_folder", True), default=True)
+
+if INCLUDE_DATASET_FOLDER:
+    SPLIT_ROOT = SPLIT_ROOT_BASE / DATASET_NAME
+else:
+    SPLIT_ROOT = SPLIT_ROOT_BASE
+
+
+def split_summary_root():
+    """Return the dataset-level summary directory for split-process analysis."""
+    configured = ANALYSIS_CFG.get("output_dir")
+    if configured not in [None, "", "null"]:
+        return Path(str(configured)).resolve()
+    summary_dirname = ANALYSIS_CFG.get("summary_dirname", "split_analysis")
+    return SPLIT_ROOT / summary_dirname
+
+
+MATERIALIZED_ROOT = Path(OUTPUT_CFG.get(
+    "materialized_root",
+    OUTPUT_ROOT / "split_process_inputs" / DATASET_NAME
+))
+
+BIOSIEVE_EXEC = STRATEGIES_CFG.get("biosieve_exec", "biosieve")
+TRAIN_REPS = CROSS_CFG.get("train_representations", list(REPS_CFG.keys()))
+
+# ============================================================
+# Wildcard constraints
+# ============================================================
+# Snakemake wildcards match '/' by default. Without this block, a path like:
+#   <scenario>/p30_0/full_data.csv
+# can be interpreted as scenario='<scenario>/p30_0' instead of
+# scenario='<scenario>' and threshold='p30_0'. This causes KeyError and
+# AmbiguousRuleException between no-threshold and with-threshold rules.
+wildcard_constraints:
+    scenario = r"[^/]+",
+    threshold = r"(?:p[0-9]+(?:_[0-9]+)?|threshold_[0-9]+(?:\.[0-9]+)?)",
+    strategy = r"(?:random_kfold|stratified_kfold|distance_aware_kfold|distance_aware_kfold_no_norm|distance_aware_kfold_norm)",
+    seed = r"[0-9]+"
+
+
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def enabled(x):
+    return as_bool(x.get("enabled", False))
+
+
+def rep_cfg(rep_key):
+    if rep_key not in REPS_CFG:
+        raise ValueError(f"Unknown representation key: {rep_key}")
+    return REPS_CFG[rep_key]
+
+
+def rep_output_name(rep_key):
+    rep = rep_cfg(rep_key)
+    return rep.get("output_name", rep.get("model_alias", rep_key))
+
+
+def rep_full_data(rep_key):
+    rep = rep_cfg(rep_key)
+    return str(REP_ROOT / DATASET_NAME / rep["method"] / rep["model_alias"] / "full_data.csv")
+
+
+def rep_feature_mode(rep_key):
+    return rep_cfg(rep_key).get("feature_mode", "embeddings")
+
+
+def rep_metric(rep_key):
+    default = "euclidean" if rep_feature_mode(rep_key) == "descriptors" else "cosine"
+    return rep_cfg(rep_key).get("metric", default)
+
+
+def rep_feature_prefix(rep_key):
+    return rep_cfg(rep_key).get("feature_prefix", "p_")
+
+
+def path_from_config(value):
+    """Resolve paths. Absolute paths are kept; relative paths are resolved from the Snakefile working directory."""
+    p = Path(str(value))
+    return p if p.is_absolute() else p.resolve()
+
+
+def list_threshold_dirs(root, threshold_spec):
+    root = Path(root)
+
+    if threshold_spec == "auto":
+        if not root.exists():
+            raise ValueError(f"Reduction root does not exist: {root}")
+        out = []
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            if d.name.startswith(("p", "threshold_", "minseqid_")):
+                out.append(d.name)
+        return sorted(out)
+
+    if threshold_spec is None:
+        return []
+
+    return [str(x) for x in threshold_spec]
+
+
+def reduced_file_for(root, threshold, kind):
+    d = Path(root) / threshold
+
+    candidates = []
+    if kind in ["reduced_distance", "reduced_descriptor"]:
+        candidates = [
+            d / "data_nr_labeled.csv",
+            d / "data_nr.csv",
+        ]
+    elif kind == "reduced_homology":
+        candidates = [
+            d / "data_nr_labeled.csv",
+            d / "data_nr_mmseqs2.csv",
+            d / "data_nr.csv",
+        ]
+
+    for c in candidates:
+        if c.exists():
+            return str(c)
+
+    # Return the first expected path so Snakemake reports a useful MissingInputException.
+    return str(candidates[0])
+
+
+def source_label(source_kind):
+    if source_kind == "no_reduced":
+        return "no_reduced"
+    if source_kind == "reduced_distance":
+        return "reduced_distance"
+    if source_kind == "reduced_homology":
+        return "reduced_homology"
+    if source_kind == "reduced_descriptor":
+        return "reduced_descriptor"
+    return source_kind
+
+
+def scenario_name(train_rep, source_kind, reduction_rep_key=None):
+    train_name = rep_output_name(train_rep)
+
+    if source_kind == "no_reduced":
+        return f"{train_name}_no_reduced"
+
+    if source_kind == "reduced_distance":
+        red_name = rep_output_name(reduction_rep_key)
+        if train_name == red_name:
+            return f"{train_name}_reduced_distance"
+        return f"{train_name}_reduced_distance_by_{red_name}"
+
+    if source_kind == "reduced_descriptor":
+        red_name = rep_output_name(reduction_rep_key)
+        if train_name == red_name:
+            return f"{train_name}_reduced_descriptor"
+        return f"{train_name}_reduced_descriptor_by_{red_name}"
+
+    if source_kind == "reduced_homology":
+        return f"{train_name}_reduced_homology"
+
+    raise ValueError(f"Unknown source kind: {source_kind}")
+
+
+def materialized_full_data_path(scenario, threshold=""):
+    if threshold:
+        return str(MATERIALIZED_ROOT / scenario / threshold / "full_data.csv")
+    return str(MATERIALIZED_ROOT / scenario / "full_data.csv")
+
+
+def split_done_path(scenario, strategy_dir, seed, threshold=""):
+    if threshold:
+        return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / threshold / "DONE.txt")
+    return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / "DONE.txt")
+
+
+def split_params_path(scenario, strategy_dir, seed, threshold=""):
+    if threshold:
+        return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / threshold / "params_split.yaml")
+    return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / "params_split.yaml")
+
+
+def split_status_row_path(scenario, strategy_dir, seed, threshold=""):
+    """Hidden one-row status file used internally to build seed-level split_summary.csv."""
+    reduction_levels = threshold if threshold else "no_threshold"
+    return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / ".split_status_rows" / f"{reduction_levels}.csv")
+
+
+def seed_split_summary_path(scenario, strategy_dir, seed):
+    """Public seed-level summary expected by downstream analysis."""
+    return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / "split_summary.csv")
+
+
+def split_output_dir(scenario, strategy_dir, seed, threshold=""):
+    if threshold:
+        return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}" / threshold)
+    return str(SPLIT_ROOT / scenario / strategy_dir / f"seed_{seed}")
+
+
+def arrays_dir_for(scenario, threshold=""):
+    if threshold:
+        return str(MATERIALIZED_ROOT / scenario / threshold / "_distance_arrays")
+    return str(MATERIALIZED_ROOT / scenario / "_distance_arrays")
+
+
+def arrays_emb_path(scenario, threshold=""):
+    return str(Path(arrays_dir_for(scenario, threshold)) / "embeddings.npy")
+
+
+def arrays_ids_path(scenario, threshold=""):
+    return str(Path(arrays_dir_for(scenario, threshold)) / "embedding_ids.csv")
+
+
+def strategy_is_distance(strategy_dir):
+    return strategy_dir.startswith("distance_aware_kfold")
+
+
+def biosieve_strategy(strategy_dir):
+    if strategy_is_distance(strategy_dir):
+        return "distance_aware_kfold"
+    return strategy_dir
+
+
+def descriptor_standardize(strategy_dir):
+    return strategy_dir.endswith("_norm")
+
+
+def active_strategy_dirs_for_rep(train_rep):
+    strategy_dirs = []
+
+    random_cfg = STRATEGIES_CFG.get("random_kfold", {})
+    if enabled(random_cfg):
+        strategy_dirs.append(random_cfg.get("output_name", "random_kfold"))
+
+    strat_cfg = STRATEGIES_CFG.get("stratified_kfold", {})
+    if enabled(strat_cfg):
+        strategy_dirs.append(strat_cfg.get("output_name", "stratified_kfold"))
+
+    dist_cfg = STRATEGIES_CFG.get("distance_aware_kfold", {})
+    if enabled(dist_cfg):
+        if rep_feature_mode(train_rep) == "descriptors":
+            modes = dist_cfg.get("descriptor_modes", ["no_norm"])
+            for mode in modes:
+                if mode == "norm":
+                    strategy_dirs.append("distance_aware_kfold_norm")
+                elif mode == "no_norm":
+                    strategy_dirs.append("distance_aware_kfold_no_norm")
+                else:
+                    raise ValueError(f"Unknown descriptor distance-aware mode: {mode}")
+        else:
+            strategy_dirs.append(dist_cfg.get("output_name", "distance_aware_kfold"))
+
+    return strategy_dirs
+
+
+# ============================================================
+# Build scenario table
+# ============================================================
+
+SCENARIOS = {}
+SEED_STATUS_ROWS = {}
+SEED_SUMMARY_TARGETS = set()
+TARGETS = []
+
+
+def add_split_attempt_target(scenario, strategy_dir, seed, threshold=""):
+    """Register one split attempt and its seed-level summary target."""
+    seed = int(seed)
+    row_path = split_status_row_path(scenario, strategy_dir, seed, threshold)
+    key = (scenario, strategy_dir, seed)
+    SEED_STATUS_ROWS.setdefault(key, []).append(row_path)
+    SEED_SUMMARY_TARGETS.add(seed_split_summary_path(scenario, strategy_dir, seed))
+
+
+def add_scenario(
+    train_rep,
+    source_kind,
+    source_file,
+    threshold="",
+    reduction_rep_key=None,
+):
+    scenario = scenario_name(train_rep, source_kind, reduction_rep_key)
+
+    key = (scenario, threshold)
+    if key not in SCENARIOS:
+        SCENARIOS[key] = {
+            "scenario": scenario,
+            "threshold": threshold,
+            "train_rep": train_rep,
+            "source_kind": source_kind,
+            "source_file": source_file,
+            "reduction_rep_key": reduction_rep_key or "",
+            "materialized": materialized_full_data_path(scenario, threshold),
+        }
+
+    for strategy_dir in active_strategy_dirs_for_rep(train_rep):
+        for seed in SEEDS:
+            add_split_attempt_target(scenario, strategy_dir, seed, threshold)
+
+
+# ----- no reduction -----
+if enabled(SOURCES_CFG.get("no_reduced", {})):
+    for train_rep in TRAIN_REPS:
+        add_scenario(
+            train_rep=train_rep,
+            source_kind="no_reduced",
+            source_file=rep_full_data(train_rep),
+            threshold="",
+            reduction_rep_key=None,
+        )
+
+
+# ----- distance-reduced datasets -----
+rd_cfg = SOURCES_CFG.get("reduced_distance", {})
+if enabled(rd_cfg):
+    for red_key, red_cfg in rd_cfg.get("reductions", {}).items():
+        if not enabled(red_cfg):
+            continue
+
+        root = red_cfg.get(
+            "root",
+            REDUCTION_ROOT / "reduced_distance" / DATASET_NAME / f"{red_key}_embedding_distance_reduction"
+        )
+        root = path_from_config(root)
+        thresholds = list_threshold_dirs(root, red_cfg.get("thresholds", "auto"))
+
+        reduction_rep_key = red_cfg.get("representation_key", red_key)
+
+        for threshold in thresholds:
+            src = reduced_file_for(root, threshold, "reduced_distance")
+            for train_rep in TRAIN_REPS:
+                add_scenario(
+                    train_rep=train_rep,
+                    source_kind="reduced_distance",
+                    source_file=src,
+                    threshold=threshold,
+                    reduction_rep_key=reduction_rep_key,
+                )
+
+
+# ----- descriptor-reduced datasets -----
+rdesc_cfg = SOURCES_CFG.get("reduced_descriptor", {})
+if enabled(rdesc_cfg):
+    for red_key, red_cfg in rdesc_cfg.get("reductions", {}).items():
+        if not enabled(red_cfg):
+            continue
+
+        root = red_cfg.get(
+            "root",
+            REDUCTION_ROOT / "reduced_descriptor" / DATASET_NAME / f"{red_key}_reduction"
+        )
+        root = path_from_config(root)
+        thresholds = list_threshold_dirs(root, red_cfg.get("thresholds", "auto"))
+        reduction_rep_key = red_cfg.get("representation_key", red_key)
+
+        for threshold in thresholds:
+            src = reduced_file_for(root, threshold, "reduced_descriptor")
+            for train_rep in TRAIN_REPS:
+                add_scenario(
+                    train_rep=train_rep,
+                    source_kind="reduced_descriptor",
+                    source_file=src,
+                    threshold=threshold,
+                    reduction_rep_key=reduction_rep_key,
+                )
+
+
+# ----- homology-reduced datasets -----
+rh_cfg = SOURCES_CFG.get("reduced_homology", {})
+if enabled(rh_cfg):
+    for red_key, red_cfg in rh_cfg.get("reductions", {}).items():
+        if not enabled(red_cfg):
+            continue
+
+        root = red_cfg.get(
+            "root",
+            REDUCTION_ROOT / "reduced_homology" / DATASET_NAME / red_key
+        )
+        root = path_from_config(root)
+        thresholds = list_threshold_dirs(root, red_cfg.get("thresholds", "auto"))
+
+        for threshold in thresholds:
+            src = reduced_file_for(root, threshold, "reduced_homology")
+            for train_rep in TRAIN_REPS:
+                add_scenario(
+                    train_rep=train_rep,
+                    source_kind="reduced_homology",
+                    source_file=src,
+                    threshold=threshold,
+                    reduction_rep_key=red_key,
+                )
+
+
+if not SEED_SUMMARY_TARGETS:
+    raise ValueError("No split targets were generated. Check enabled flags in config.yaml.")
+
+# Public split targets are seed-level split_summary.csv files. Each summary depends on
+# hidden per-run status rows created by the split rules.
+SPLIT_TARGETS = sorted(SEED_SUMMARY_TARGETS)
+TARGETS = list(SPLIT_TARGETS)
+ANALYSIS_DONE_TARGET = str(split_summary_root() / "analysis.done")
+
+if ANALYSIS_ENABLED:
+    TARGETS.append(ANALYSIS_DONE_TARGET)
+
+def cleanup_marker_path():
+    cleanup_dir = split_summary_root() if ANALYSIS_ENABLED else SPLIT_ROOT
+    return str(Path(cleanup_dir) / ".materialized_inputs_removed.done")
+
+if CLEANUP_MATERIALIZED:
+    TARGETS.append(cleanup_marker_path())
+
+
+# ============================================================
+# Rule all
+# ============================================================
+
+rule all:
+    input:
+        TARGETS
+
+
+rule analyse_split_process:
+    input:
+        SPLIT_TARGETS
+    output:
+        done=str(split_summary_root() / "analysis.done")
+    params:
+        script=lambda wc: str(Path(ANALYSIS_CFG.get("script", "../../notebooks_and_scripts/scripts_for_pipelines/split_summary.py")).resolve()),
+        split_root=lambda wc: str(SPLIT_ROOT.resolve()),
+        output_dir=lambda wc: str(split_summary_root().resolve()),
+        fig_format=lambda wc: ANALYSIS_CFG.get("plots", {}).get("fig_format", "png"),
+        dpi=lambda wc: int(ANALYSIS_CFG.get("plots", {}).get("dpi", 300)),
+        cmap=lambda wc: ANALYSIS_CFG.get("plots", {}).get("cmap", "YlGnBu"),
+        annotate=lambda wc: str(ANALYSIS_CFG.get("plots", {}).get("annotate", True)).lower(),
+        include_no_threshold=lambda wc: str(ANALYSIS_CFG.get("plots", {}).get("include_no_threshold", True)).lower(),
+        dataset_name=lambda wc: DATASET_NAME
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.output_dir}"
+
+        python "{params.script}" \
+          --split-root "{params.split_root}" \
+          --output-dir "{params.output_dir}" \
+          --dataset-name "{params.dataset_name}" \
+          --fig-format "{params.fig_format}" \
+          --dpi {params.dpi} \
+          --cmap "{params.cmap}" \
+          --annotate "{params.annotate}" \
+          --include-no-threshold "{params.include_no_threshold}"
+
+        touch "{output.done}"
+        """
+
+
+def cleanup_inputs_for_rule(wildcards=None):
+    inputs = list(SPLIT_TARGETS)
+    if ANALYSIS_ENABLED:
+        inputs.append(ANALYSIS_DONE_TARGET)
+    return inputs
+
+
+rule cleanup_materialized_inputs:
+    input:
+        cleanup_inputs_for_rule
+    output:
+        marker=cleanup_marker_path()
+    run:
+        root = Path(str(MATERIALIZED_ROOT)).resolve()
+        parent = root.parent
+
+        if root.exists():
+            print(f"[INFO] Removing temporary materialized split inputs: {root}")
+            shutil.rmtree(root)
+        else:
+            print(f"[INFO] Temporary materialized split input folder does not exist: {root}")
+
+        # Remove split_process_inputs/ only if it is empty.
+        # This avoids deleting temporary inputs from another dataset.
+        if parent.name == "split_process_inputs":
+            try:
+                parent.rmdir()
+                print(f"[INFO] Removed empty parent folder: {parent}")
+            except FileNotFoundError:
+                print(f"[INFO] Parent folder does not exist: {parent}")
+            except OSError:
+                print(f"[INFO] Parent folder was not removed because it is not empty: {parent}")
+        else:
+            print(
+                f"[INFO] Parent folder was not removed because it does not look like "
+                f"'split_process_inputs': {parent}"
+            )
+
+        Path(output.marker).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.marker).write_text("removed\n", encoding="utf-8")
+
+
+# ============================================================
+# Materialize split inputs
+# ============================================================
+
+rule materialize_no_threshold:
+    input:
+        source=lambda wc: SCENARIOS[(wc.scenario, "")]["source_file"],
+        train_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, "")]["train_rep"])
+    output:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        metadata=str(MATERIALIZED_ROOT / "{scenario}" / "metadata.json")
+    run:
+        materialize_dataset(
+            source_path=input.source,
+            train_full_path=input.train_full,
+            output_path=output.full_data,
+            metadata_path=output.metadata,
+            meta=SCENARIOS[(wildcards.scenario, "")]
+        )
+
+
+rule materialize_with_threshold:
+    input:
+        source=lambda wc: SCENARIOS[(wc.scenario, wc.threshold)]["source_file"],
+        train_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, wc.threshold)]["train_rep"])
+    output:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        metadata=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "metadata.json")
+    run:
+        materialize_dataset(
+            source_path=input.source,
+            train_full_path=input.train_full,
+            output_path=output.full_data,
+            metadata_path=output.metadata,
+            meta=SCENARIOS[(wildcards.scenario, wildcards.threshold)]
+        )
+
+
+def materialize_dataset(source_path, train_full_path, output_path, metadata_path, meta):
+    source_path = Path(str(source_path))
+    train_full_path = Path(str(train_full_path))
+    output_path = Path(str(output_path))
+    metadata_path = Path(str(metadata_path))
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source dataset not found: {source_path}")
+    if not train_full_path.exists():
+        raise FileNotFoundError(f"Training representation full_data not found: {train_full_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    src = pd.read_csv(source_path)
+    feat = pd.read_csv(train_full_path)
+
+    if meta["source_kind"] == "no_reduced" and source_path.resolve() == train_full_path.resolve():
+        out = feat.copy()
+    else:
+        join_col = None
+        if ID_COL in src.columns and ID_COL in feat.columns:
+            join_col = ID_COL
+        elif SEQUENCE_COL in src.columns and SEQUENCE_COL in feat.columns:
+            join_col = SEQUENCE_COL
+
+        if join_col is None:
+            raise ValueError(
+                f"Could not merge source with representation. "
+                f"Neither '{ID_COL}' nor '{SEQUENCE_COL}' is present in both files.\n"
+                f"source columns: {src.columns.tolist()}\n"
+                f"feature columns: {feat.columns.tolist()}"
+            )
+
+        src = src.copy()
+        src["_order"] = range(len(src))
+
+        keep_cols = [join_col, "_order"]
+        for c in [ID_COL, SEQUENCE_COL, LABEL_COL]:
+            if c in src.columns and c not in keep_cols:
+                keep_cols.append(c)
+
+        src_core = src[keep_cols].drop_duplicates(subset=[join_col], keep="first")
+        out = src_core.merge(feat, on=join_col, how="inner", suffixes=("_source", ""))
+
+        if out.empty:
+            raise ValueError(
+                f"Merge produced 0 rows using join_col='{join_col}'. "
+                f"source={source_path}, train_full={train_full_path}"
+            )
+
+        # Prefer source metadata columns if available.
+        for c in [ID_COL, SEQUENCE_COL, LABEL_COL]:
+            source_c = f"{c}_source"
+            if source_c in out.columns:
+                if c in out.columns:
+                    out[c] = out[source_c].combine_first(out[c])
+                else:
+                    out[c] = out[source_c]
+                out = out.drop(columns=[source_c])
+
+        out = out.sort_values("_order").drop(columns=["_order"])
+        out = out.loc[:, ~out.columns.duplicated()]
+
+    required = [ID_COL, LABEL_COL]
+    missing = [c for c in required if c not in out.columns]
+    if missing:
+        raise ValueError(
+            f"Materialized dataset is missing required columns: {missing}. "
+            f"Columns: {out.columns.tolist()}"
+        )
+
+    out.to_csv(output_path, index=False)
+
+    metadata = dict(meta)
+    metadata.update({
+        "source_path": str(source_path),
+        "train_full_path": str(train_full_path),
+        "output_path": str(output_path),
+        "n_rows": int(out.shape[0]),
+        "n_columns": int(out.shape[1]),
+    })
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+# ============================================================
+# Distance arrays
+# ============================================================
+
+rule build_distance_arrays_no_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv")
+    output:
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+    run:
+        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, "")]["train_rep"])
+
+
+rule build_distance_arrays_with_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv")
+    output:
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+    run:
+        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, wildcards.threshold)]["train_rep"])
+
+
+def build_distance_arrays(full_data_path, emb_path, ids_path, train_rep):
+    import numpy as np
+
+    df = pd.read_csv(full_data_path)
+
+    rep = rep_cfg(train_rep)
+    feature_mode = rep_feature_mode(train_rep)
+
+    if ID_COL not in df.columns:
+        raise ValueError(f"ID column '{ID_COL}' not found in {full_data_path}")
+
+    if feature_mode == "descriptors":
+        prefix = rep_feature_prefix(train_rep)
+        feature_cols = [c for c in df.columns if str(c).startswith(prefix)]
+    else:
+        non_feature_cols = {SEQUENCE_COL, ID_COL, LABEL_COL}
+        feature_cols = [c for c in df.columns if c not in non_feature_cols and pd.api.types.is_numeric_dtype(df[c])]
+
+    if not feature_cols:
+        raise ValueError(
+            f"No feature columns found for train_rep={train_rep} in {full_data_path}"
+        )
+
+    Path(emb_path).parent.mkdir(parents=True, exist_ok=True)
+    df[feature_cols].to_numpy(dtype="float32")
+    np.save(emb_path, df[feature_cols].to_numpy(dtype="float32"))
+    df[[ID_COL]].to_csv(ids_path, index=False)
+
+
+# ============================================================
+# Write split params
+# ============================================================
+
+rule write_basic_params_no_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv")
+    output:
+        yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
+    wildcard_constraints:
+        strategy="random_kfold|stratified_kfold"
+    run:
+        write_params_yaml(
+            output_yaml=output.yaml_file,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold=""
+        )
+
+
+rule write_basic_params_with_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv")
+    output:
+        yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
+    wildcard_constraints:
+        strategy="random_kfold|stratified_kfold"
+    run:
+        write_params_yaml(
+            output_yaml=output.yaml_file,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold=wildcards.threshold
+        )
+
+
+rule write_distance_params_no_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+    output:
+        yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
+    wildcard_constraints:
+        strategy="distance_aware_kfold|distance_aware_kfold_no_norm|distance_aware_kfold_norm"
+    run:
+        write_params_yaml(
+            output_yaml=output.yaml_file,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold="",
+            embeddings_path=input.emb,
+            ids_path=input.ids
+        )
+
+
+rule write_distance_params_with_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+    output:
+        yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
+    wildcard_constraints:
+        strategy="distance_aware_kfold|distance_aware_kfold_no_norm|distance_aware_kfold_norm"
+    run:
+        write_params_yaml(
+            output_yaml=output.yaml_file,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold=wildcards.threshold,
+            embeddings_path=input.emb,
+            ids_path=input.ids
+        )
+
+
+def write_params_yaml(output_yaml, strategy_dir, seed, scenario, threshold="", embeddings_path=None, ids_path=None):
+    Path(output_yaml).parent.mkdir(parents=True, exist_ok=True)
+
+    actual_strategy = biosieve_strategy(strategy_dir)
+    meta = SCENARIOS[(scenario, threshold)]
+    train_rep = meta["train_rep"]
+
+    if actual_strategy == "random_kfold":
+        cfg = {
+            actual_strategy: {
+                "n_splits": int(STRATEGIES_CFG["random_kfold"].get("n_splits", 5)),
+                "shuffle": as_bool(STRATEGIES_CFG["random_kfold"].get("shuffle", True), default=True),
+                "seed": int(seed),
+                "val_size": float(STRATEGIES_CFG["random_kfold"].get("val_size", 0.1)),
+            }
+        }
+
+    elif actual_strategy == "stratified_kfold":
+        st = STRATEGIES_CFG["stratified_kfold"]
+        cfg = {
+            actual_strategy: {
+                "label_col": LABEL_COL,
+                "n_splits": int(st.get("n_splits", 5)),
+                "shuffle": as_bool(st.get("shuffle", True), default=True),
+                "seed": int(seed),
+                "val_size": float(st.get("val_size", 0.1)),
+                "dropna": as_bool(st.get("dropna", True), default=True),
+                "cast_to_str": as_bool(st.get("cast_to_str", False)),
+            }
+        }
+
+    elif actual_strategy == "distance_aware_kfold":
+        dt = STRATEGIES_CFG["distance_aware_kfold"]
+        feature_mode = rep_feature_mode(train_rep)
+
+        cfg = {
+            actual_strategy: {
+                "feature_mode": feature_mode,
+                "metric": rep_metric(train_rep),
+                "n_splits": int(dt.get("n_splits", 5)),
+                "seed": int(seed),
+                "shuffle_ties": as_bool(dt.get("shuffle_ties", True), default=True),
+                "val_size": float(dt.get("val_size", 0.1)),
+                "embeddings_path": str(Path(embeddings_path).resolve()),
+                "ids_path": str(Path(ids_path).resolve()),
+            }
+        }
+
+        if feature_mode == "descriptors":
+            # Biosieve DistanceAwareKFoldSplitter expects descriptor_prefix, not feature_prefix.
+            cfg[actual_strategy]["descriptor_prefix"] = rep_feature_prefix(train_rep)
+            cfg[actual_strategy]["standardize_descriptors"] = as_bool(descriptor_standardize(strategy_dir))
+
+    else:
+        raise ValueError(f"Unsupported strategy: {strategy_dir}")
+
+    with open(output_yaml, "w") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+
+
+# ============================================================
+# Create splits with validation and skip report
+# ============================================================
+
+
+def threshold_to_parameter(threshold):
+    """Convert folder names to numeric parameter values when possible."""
+    if not threshold:
+        return ""
+    text = str(threshold)
+    if text.startswith("p"):
+        try:
+            return float(text[1:].replace("_", "."))
+        except Exception:
+            return text
+    if text.startswith("threshold_"):
+        try:
+            return float(text.replace("threshold_", ""))
+        except Exception:
+            return text
+    if text.startswith("minseqid_"):
+        raw = text.replace("minseqid_", "")
+        try:
+            return float(raw.replace("_", "."))
+        except Exception:
+            return text
+    return text
+
+
+def compact_counts(series):
+    counts = series.value_counts(dropna=False).to_dict()
+    return "{" + ", ".join(f"{k}: {v}" for k, v in counts.items()) + "}"
+
+
+def clean_split_reason(reason):
+    """Convert raw Biosieve logs or validation messages into a compact, readable reason."""
+    if reason is None:
+        return ""
+
+    text = str(reason).strip()
+    if not text:
+        return ""
+
+    # Collapse repeated whitespace introduced by multiline logs.
+    text = " ".join(text.split())
+
+    # Most Biosieve failures include an ERROR line after several INFO lines. Keep only the useful part.
+    if "ERROR:" in text:
+        text = text.split("ERROR:", 1)[1].strip()
+
+    # Idempotency: if the reason was already cleaned once, do not prepend the
+    # same explanatory prefix again when building split_summary.csv.
+    cleaned_prefixes = (
+        "Distance-aware split failed because",
+        "Invalid stratified k-fold:",
+        "Invalid split input:",
+        "Invalid split: at least one train/val/test fold contains fewer than two classes.",
+    )
+    if text.startswith(cleaned_prefixes):
+        return text
+
+    # Make common errors easier to understand.
+    if "Unknown parameters for DistanceAwareKFoldSplitter" in text:
+        m = __import__("re").search(r"Unknown parameters for DistanceAwareKFoldSplitter: (\[[^\]]+\])", text)
+        unknown = m.group(1) if m else "one or more parameters"
+        return (
+            "Distance-aware split failed because params_split.yaml contains unsupported parameter(s) "
+            f"{unknown}. For descriptor-based splits, use 'descriptor_prefix' instead of 'feature_prefix'."
+        )
+
+    if "Some classes have fewer samples than n_splits" in text or "some classes have fewer samples than n_splits" in text:
+        return "Invalid stratified k-fold: at least one class has fewer samples than n_splits. " + text
+
+    if "has only" in text and "class(es)" in text:
+        return "Invalid split: at least one train/val/test fold contains fewer than two classes. " + text
+
+    if "input dataset has only" in text and "class(es)" in text:
+        return "Invalid split input: the dataset has fewer than two classes. " + text
+
+    if "input dataset has fewer rows than n_splits" in text:
+        return "Invalid split input: the dataset has fewer rows than n_splits. " + text
+
+    if "embeddings_path not found" in text or "ids_path not found" in text:
+        return (
+            "Distance-aware split failed because the temporary distance-array files were not available. "
+            "This usually means split_process_inputs was cleaned or treated as temporary before Biosieve read it. "
+            + text
+        )
+
+    return text
+
+
+def write_split_status(status_path, scenario, strategy_dir, seed, threshold, status, reason="", full_data="", outdir=""):
+    """Write one-row CSV status for a split attempt.
+
+    status values:
+      - kept: split is valid and can be used downstream.
+      - invalid_split: split was skipped or generated invalid train/val/test files.
+    """
+    status_path = Path(str(status_path))
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+
+    reason = clean_split_reason(reason)
+
+    row = {
+        "dataset_name": DATASET_NAME,
+        "scenario": scenario,
+        "strategy": strategy_dir,
+        "biosieve_strategy": biosieve_strategy(strategy_dir),
+        "seed": int(seed),
+        "threshold": threshold,
+        "percentile": threshold_to_parameter(threshold) if str(threshold).startswith("p") else "",
+        "parameter_value": threshold_to_parameter(threshold),
+        "reduction_levels": threshold if threshold else "no_threshold",
+        "status": status,
+        "reason": reason,
+        "full_data": str(full_data),
+        "outdir": str(outdir),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    pd.DataFrame([row]).to_csv(status_path, index=False)
+
+
+def precheck_split_input(full_data_path, strategy_dir):
+    """Return (is_valid, reason) before calling Biosieve.
+
+    This prevents impossible jobs from killing the whole Snakemake run.
+    """
+    if not as_bool(VALIDATION_CFG.get("enabled", True), default=True):
+        return True, ""
+
+    full_data_path = Path(str(full_data_path))
+    if not full_data_path.exists():
+        return False, f"input file does not exist: {full_data_path}"
+
+    df = pd.read_csv(full_data_path)
+    actual_strategy = biosieve_strategy(strategy_dir)
+
+    if df.empty:
+        return False, f"input dataset has 0 rows: {full_data_path}"
+
+    if ID_COL not in df.columns:
+        return False, f"id column '{ID_COL}' not found. Columns={df.columns.tolist()}"
+
+    # All evaluated classification splits should contain at least two classes.
+    if LABEL_COL not in df.columns:
+        return False, f"label column '{LABEL_COL}' not found. Columns={df.columns.tolist()}"
+
+    label_counts = df[LABEL_COL].value_counts(dropna=False)
+    min_classes = int(VALIDATION_CFG.get("min_classes", 2))
+    if label_counts.shape[0] < min_classes:
+        return False, f"input dataset has only {label_counts.shape[0]} class(es). Counts={label_counts.to_dict()}"
+
+    if actual_strategy == "random_kfold":
+        n_splits = int(STRATEGIES_CFG["random_kfold"].get("n_splits", 5))
+    elif actual_strategy == "stratified_kfold":
+        n_splits = int(STRATEGIES_CFG["stratified_kfold"].get("n_splits", 5))
+    elif actual_strategy == "distance_aware_kfold":
+        n_splits = int(STRATEGIES_CFG["distance_aware_kfold"].get("n_splits", 5))
+    else:
+        n_splits = 5
+
+    if df.shape[0] < n_splits:
+        return False, f"input dataset has fewer rows than n_splits. n_rows={df.shape[0]}, n_splits={n_splits}"
+
+    # StratifiedKFold requires every class to have at least n_splits samples.
+    if actual_strategy == "stratified_kfold":
+        bad = {k: int(v) for k, v in label_counts.items() if int(v) < n_splits}
+        if bad:
+            return False, f"some classes have fewer samples than n_splits={n_splits}. Problem classes={bad}. Counts={label_counts.to_dict()}"
+
+    return True, ""
+
+
+def validate_split_outputs(outdir):
+    """Return (is_valid, reason) after Biosieve creates split files."""
+    if not as_bool(VALIDATION_CFG.get("enabled", True), default=True):
+        return True, ""
+
+    outdir = Path(str(outdir))
+    if not outdir.exists():
+        return False, f"output directory was not created: {outdir}"
+
+    fold_dirs = sorted([p for p in outdir.glob("fold_*") if p.is_dir()])
+    if not fold_dirs:
+        return False, f"no fold_* directories were created in {outdir}"
+
+    required_files = VALIDATION_CFG.get("required_split_files", ["train.csv", "val.csv", "test.csv"])
+    min_classes = int(VALIDATION_CFG.get("min_classes_per_split", 2))
+    issues = []
+
+    for fold_dir in fold_dirs:
+        for filename in required_files:
+            path = fold_dir / filename
+            split_name = Path(filename).stem
+            if not path.exists():
+                issues.append(f"{path.relative_to(outdir)}: missing split file")
+                continue
+
+            try:
+                df = pd.read_csv(path)
+            except Exception as exc:
+                issues.append(f"{path.relative_to(outdir)}: could not read csv: {exc}")
+                continue
+
+            if df.empty:
+                issues.append(f"{path.relative_to(outdir)}: split '{split_name}' has 0 rows")
+                continue
+
+            if LABEL_COL not in df.columns:
+                issues.append(f"{path.relative_to(outdir)}: label column '{LABEL_COL}' not found")
+                continue
+
+            n_classes = df[LABEL_COL].nunique(dropna=False)
+            if n_classes < min_classes:
+                issues.append(
+                    f"{path.relative_to(outdir)}: split '{split_name}' has only {n_classes} class(es). Counts={compact_counts(df[LABEL_COL])}"
+                )
+
+    if issues:
+        return False, " | ".join(issues)
+
+    return True, ""
+
+
+def remove_split_artifacts(outdir, remove_logs=False):
+    """Remove generated split files without deleting params_split.yaml or summaries.
+
+    This is used to avoid stale fold_* directories from previous runs and to prevent
+    invalid splits from looking valid just because Biosieve wrote train/val/test files
+    before post-validation failed.
+    """
+    outdir = Path(str(outdir))
+    if not outdir.exists():
+        return
+
+    for fold_dir in outdir.glob("fold_*"):
+        if fold_dir.is_dir():
+            shutil.rmtree(fold_dir)
+
+    for filename in ["kfold_report.json", "INVALID_SPLIT.txt", "DONE.txt"]:
+        path = outdir / filename
+        if path.exists():
+            path.unlink()
+
+    if remove_logs:
+        for filename in ["biosieve_split.stdout.log", "biosieve_split.stderr.log"]:
+            path = outdir / filename
+            if path.exists():
+                path.unlink()
+
+
+def clean_outdir_before_split(outdir):
+    if as_bool(VALIDATION_CFG.get("remove_stale_outputs_before_split", True), default=True):
+        remove_split_artifacts(outdir, remove_logs=True)
+
+
+def handle_invalid_generated_split(outdir, threshold=""):
+    """Remove invalid split outputs so they cannot be used by mistake.
+
+    For thresholded reductions (percentiles or homology thresholds), an invalid
+    run should not leave a pXX/ or threshold_XX folder at all. The reason remains
+    traceable in the seed-level split_summary.csv through the hidden status row.
+
+    For no-threshold runs, the output directory is the seed directory itself, so
+    we only remove fold artifacts and keep the seed folder for split_summary.csv.
+    """
+    keep_invalid = as_bool(VALIDATION_CFG.get("keep_invalid_fold_files", False), default=False)
+    remove_invalid_dir = as_bool(VALIDATION_CFG.get("remove_invalid_run_dirs", True), default=True)
+
+    outdir = Path(str(outdir))
+
+    if keep_invalid:
+        return
+
+    if threshold and remove_invalid_dir:
+        if outdir.exists():
+            shutil.rmtree(outdir)
+        return
+
+    remove_split_artifacts(outdir, remove_logs=False)
+
+
+def run_biosieve_split_safely(full_data, params_yaml, outdir, strategy_dir, seed, scenario, threshold, status_path, done_path=None):
+    """Run Biosieve split and always write a status row.
+
+    Important behavior:
+    - If the split is valid, the run directory is kept and DONE.txt is written.
+    - If the split is invalid and it corresponds to a percentile/threshold,
+      the whole pXX/ or threshold_XX/ directory is removed, so downstream code
+      cannot accidentally use invalid train/val/test files.
+    - The invalid reason is still saved in the hidden status row and then in the
+      public seed-level split_summary.csv.
+    """
+    outdir = Path(str(outdir))
+    outdir.mkdir(parents=True, exist_ok=True)
+    clean_outdir_before_split(outdir)
+
+    done_path = Path(str(done_path)) if done_path not in [None, "", "null"] else None
+    status_path = Path(str(status_path))
+
+    ok, reason = precheck_split_input(full_data, strategy_dir)
+    if not ok:
+        write_split_status(
+            status_path=status_path,
+            scenario=scenario,
+            strategy_dir=strategy_dir,
+            seed=seed,
+            threshold=threshold,
+            status="invalid_split",
+            reason=reason,
+            full_data=full_data,
+            outdir=outdir,
+        )
+        handle_invalid_generated_split(outdir, threshold=threshold)
+        if not threshold:
+            (outdir / "INVALID_SPLIT.txt").write_text(clean_split_reason(reason) + "\n", encoding="utf-8")
+            if done_path is not None:
+                done_path.write_text("invalid_split\n", encoding="utf-8")
+        print(f"[WARNING] Skipping invalid split: {scenario} {strategy_dir} seed={seed} threshold={threshold}. {reason}")
+        return
+
+    actual_strategy = biosieve_strategy(strategy_dir)
+    cmd = [
+        BIOSIEVE_EXEC,
+        "split",
+        "-i", str(full_data),
+        "-o", str(outdir),
+        "--strategy", str(actual_strategy),
+        "--id-column", str(ID_COL),
+        "--params", str(params_yaml),
+    ]
+
+    print("[CMD] " + " ".join(cmd))
+    result = subprocess.run(cmd, text=True, capture_output=True)
+
+    (outdir / "biosieve_split.stdout.log").write_text(result.stdout or "", encoding="utf-8")
+    (outdir / "biosieve_split.stderr.log").write_text(result.stderr or "", encoding="utf-8")
+
+    if result.returncode != 0:
+        reason = (result.stderr or result.stdout or f"biosieve split failed with return code {result.returncode}").strip()
+        reason = " ".join(reason.split())
+        write_split_status(
+            status_path=status_path,
+            scenario=scenario,
+            strategy_dir=strategy_dir,
+            seed=seed,
+            threshold=threshold,
+            status="invalid_split",
+            reason=reason,
+            full_data=full_data,
+            outdir=outdir,
+        )
+        handle_invalid_generated_split(outdir, threshold=threshold)
+        if not threshold:
+            (outdir / "INVALID_SPLIT.txt").write_text(clean_split_reason(reason) + "\n", encoding="utf-8")
+            if done_path is not None:
+                done_path.write_text("invalid_split\n", encoding="utf-8")
+        print(f"[WARNING] Biosieve failed but workflow continues. See {status_path}")
+        return
+
+    valid, reason = validate_split_outputs(outdir)
+    if valid:
+        write_split_status(
+            status_path=status_path,
+            scenario=scenario,
+            strategy_dir=strategy_dir,
+            seed=seed,
+            threshold=threshold,
+            status="kept",
+            reason="",
+            full_data=full_data,
+            outdir=outdir,
+        )
+        if done_path is not None:
+            done_path.write_text("kept\n", encoding="utf-8")
+    else:
+        write_split_status(
+            status_path=status_path,
+            scenario=scenario,
+            strategy_dir=strategy_dir,
+            seed=seed,
+            threshold=threshold,
+            status="invalid_split",
+            reason=reason,
+            full_data=full_data,
+            outdir=outdir,
+        )
+        handle_invalid_generated_split(outdir, threshold=threshold)
+        if not threshold:
+            (outdir / "INVALID_SPLIT.txt").write_text(clean_split_reason(reason) + "\n", encoding="utf-8")
+            if done_path is not None:
+                done_path.write_text("invalid_split\n", encoding="utf-8")
+        print(f"[WARNING] Split created but marked invalid. Invalid run folder was removed when thresholded. See {status_path}")
+
+
+rule create_basic_splits_no_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
+    output:
+        status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "no_threshold.csv"))
+    wildcard_constraints:
+        strategy="random_kfold|stratified_kfold"
+    params:
+        outdir=lambda wc: split_output_dir(wc.scenario, wc.strategy, wc.seed, ""),
+        done=lambda wc: split_done_path(wc.scenario, wc.strategy, wc.seed, "")
+    run:
+        run_biosieve_split_safely(
+            full_data=input.full_data,
+            params_yaml=input.params_yaml,
+            outdir=params.outdir,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold="",
+            status_path=output.status_row,
+            done_path=params.done,
+        )
+
+
+rule create_basic_splits_with_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
+    output:
+        status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "{threshold}.csv"))
+    wildcard_constraints:
+        strategy="random_kfold|stratified_kfold"
+    params:
+        outdir=lambda wc: split_output_dir(wc.scenario, wc.strategy, wc.seed, wc.threshold),
+        done=lambda wc: split_done_path(wc.scenario, wc.strategy, wc.seed, wc.threshold)
+    run:
+        run_biosieve_split_safely(
+            full_data=input.full_data,
+            params_yaml=input.params_yaml,
+            outdir=params.outdir,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold=wildcards.threshold,
+            status_path=output.status_row,
+            done_path=params.done,
+        )
+
+
+rule create_distance_splits_no_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml"),
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+    output:
+        status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "no_threshold.csv"))
+    wildcard_constraints:
+        strategy="distance_aware_kfold|distance_aware_kfold_no_norm|distance_aware_kfold_norm"
+    params:
+        outdir=lambda wc: split_output_dir(wc.scenario, wc.strategy, wc.seed, ""),
+        done=lambda wc: split_done_path(wc.scenario, wc.strategy, wc.seed, "")
+    run:
+        # emb and ids are explicit inputs so Snakemake cannot delete or ignore them
+        # before Biosieve reads the paths stored inside params_split.yaml.
+        run_biosieve_split_safely(
+            full_data=input.full_data,
+            params_yaml=input.params_yaml,
+            outdir=params.outdir,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold="",
+            status_path=output.status_row,
+            done_path=params.done,
+        )
+
+
+rule create_distance_splits_with_threshold:
+    input:
+        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml"),
+        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
+        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+    output:
+        status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "{threshold}.csv"))
+    wildcard_constraints:
+        strategy="distance_aware_kfold|distance_aware_kfold_no_norm|distance_aware_kfold_norm"
+    params:
+        outdir=lambda wc: split_output_dir(wc.scenario, wc.strategy, wc.seed, wc.threshold),
+        done=lambda wc: split_done_path(wc.scenario, wc.strategy, wc.seed, wc.threshold)
+    run:
+        # emb and ids are explicit inputs so Snakemake cannot delete or ignore them
+        # before Biosieve reads the paths stored inside params_split.yaml.
+        run_biosieve_split_safely(
+            full_data=input.full_data,
+            params_yaml=input.params_yaml,
+            outdir=params.outdir,
+            strategy_dir=wildcards.strategy,
+            seed=wildcards.seed,
+            scenario=wildcards.scenario,
+            threshold=wildcards.threshold,
+            status_path=output.status_row,
+            done_path=params.done,
+        )
+
+def split_summary_inputs(wc):
+    key = (wc.scenario, wc.strategy, int(wc.seed))
+    if key not in SEED_STATUS_ROWS:
+        raise KeyError(f"No status rows registered for seed-level split summary: {key}")
+    return SEED_STATUS_ROWS[key]
+
+
+def write_seed_summary_table(row_files, output_csv):
+    frames = []
+    for path in row_files:
+        df = pd.read_csv(path)
+        frames.append(df)
+
+    if not frames:
+        raise ValueError(f"No split status rows found for {output_csv}")
+
+    df = pd.concat(frames, ignore_index=True)
+
+    # Sort in the natural order used by reduction folders.
+    if "parameter_value" in df.columns:
+        df["_sort_value"] = pd.to_numeric(df["parameter_value"], errors="coerce")
+    else:
+        df["_sort_value"] = pd.NA
+    df["_sort_value"] = df["_sort_value"].fillna(-1)
+    df = df.sort_values(["_sort_value", "reduction_levels"]).drop(columns=["_sort_value"])
+
+    reduction_levels = df.get("reduction_levels", pd.Series(dtype=str)).astype(str).tolist()
+
+    # Keep public reasons concise even if an upstream tool produced verbose logs.
+    if "reason" in df.columns:
+        df["reason"] = df["reason"].fillna("").map(clean_split_reason)
+
+    if reduction_levels and all(x == "no_threshold" for x in reduction_levels):
+        out = df[["reduction_levels", "status", "reason"]].copy()
+    elif reduction_levels and all(x.startswith("p") for x in reduction_levels):
+        out = df[["percentile", "reduction_levels", "status", "reason"]].copy()
+    elif reduction_levels and all(x.startswith("threshold_") or x.startswith("minseqid_") for x in reduction_levels):
+        out = df[["parameter_value", "reduction_levels", "status", "reason"]].copy()
+        out = out.rename(columns={"parameter_value": "min_seq_id"})
+    else:
+        out = df[["parameter_value", "reduction_levels", "status", "reason"]].copy()
+
+    output_csv = Path(str(output_csv))
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(output_csv, index=False)
+
+
+rule write_seed_split_summary:
+    input:
+        rows=split_summary_inputs
+    output:
+        summary=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "split_summary.csv")
+    run:
+        write_seed_summary_table(input.rows, output.summary)

@@ -1,0 +1,79 @@
+global:
+  output_root: "../.."
+
+  # Optional. Only used if selection.seeds is not "auto" and you want to
+  # restrict training to a predefined set of seeds.
+  seeds_file: "../../general_configs/random_seeds_30.csv"
+
+dataset:
+  name: "test"
+  label_col: "label"
+
+input:
+  # If null, the workflow reads:
+  #   <output_root>/split_process/<dataset.name>
+  split_root: null
+
+output:
+  # If null, outputs go to:
+  #   <output_root>/training_process/<dataset.name>
+  root: null
+  include_dataset_folder: true
+
+selection:
+  # All these can be "auto" or explicit lists.
+  # Examples:
+  #   scenarios: ["esm2_t6_8M_UR50D_no_reduced"]
+  #   strategies: ["random_kfold", "stratified_kfold"]
+  #   seeds: [4617, 8596]
+  #   reduction_levels: ["no_threshold", "p90_0", "threshold_0.7"]
+  scenarios: "auto"
+  strategies: "auto"
+  seeds: "auto"
+  reduction_levels: "auto"
+
+  # Only rows with this status in seed-level split_summary.csv are trained.
+  required_status: "kept"
+
+training:
+  enabled: true
+
+  script: "../../notebooks_and_scripts/scripts_for_pipelines/training_model_external_cv.py"
+  config: "../../general_configs/config_hyperparameters_algorithm.json"
+
+  # One or several algorithms present in config_hyperparameters_algorithm.json.
+  algorithms:
+    - "LogisticRegression"
+    # - "RandomForestClassifier"
+    # - "ExtraTreesClassifier"
+    # - "SVC"
+    # - "KNeighborsClassifier"
+    # - "DecisionTreeClassifier"
+    # - "GaussianNB"
+    # - "XGBClassifier"
+
+  # One or several scalers passed to training_model_external_cv.py.
+  scalers:
+    - "none"
+    # - "standard"
+    # - "minmax"
+
+  feature_prefix: "p_"
+  timestamp: false
+  extra_args: ""
+
+metadata:
+  # Usually leave this as true. The workflow infers these fields from the
+  # split scenario name, for example:
+  #   one_hot_reduced_distance_by_esm2_t6_8M_UR50D
+  #   -> representation_strategy = one_hot
+  #   -> redundancy_strategy = reduced_distance_by_esm2_t6_8M_UR50D
+  infer_from_scenario: true
+
+  # Optional manual overrides if a scenario has an unusual name.
+  scenario_overrides: {}
+  # Example:
+  # scenario_overrides:
+  #   one_hot_no_reduced:
+  #     representation_strategy: "one_hot"
+  #     redundancy_strategy: "no_reduction"

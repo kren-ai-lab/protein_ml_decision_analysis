@@ -1,0 +1,809 @@
+# Unified data-reduction workflow for protein-sequence ML experiments.
+#
+# This workflow can run any combination of:
+#   1) embedding-distance reduction from one or more embedding spaces
+#   2) homology reduction with Biosieve/MMseqs2
+#   3) one-hot descriptor/euclidean reduction
+#
+# It assumes the numerical_representations workflow has already created:
+#   numerical_representation_data/<dataset>/<method>/<model_alias>/full_data.csv
+#   numerical_representation_data/<dataset>/<method>/<model_alias>/analysis/tables/<prefix>_similarity_percentiles.csv
+#   numerical_representation_data/<dataset>/<method>/<model_alias>/analysis/artifacts/training_embeddings.npy
+#
+# The representation paths are inferred from a compact config, but can still be
+# overridden explicitly with full_data, analysis.output_dir, analysis.percentiles_csv,
+# or analysis.embedding_npy if needed.
+
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import json
+import re
+import subprocess
+import pandas as pd
+import yaml
+
+
+# -------------------------------------------------------------------------
+# Configuration
+# -------------------------------------------------------------------------
+
+GLOBAL_CFG = config.get("global", {})
+DATASET_CFG = config.get("dataset", {})
+REPS_CFG = config.get("representations", {})
+REDUCTIONS_CFG = config.get("reductions", {})
+ANALYSIS_CFG = config.get("analysis", {})
+
+OUTPUT_ROOT = GLOBAL_CFG["output_root"]
+EMBEDDING_ROOT = GLOBAL_CFG.get("embedding_root", "../../numerical_representation_data")
+
+DATASET_NAME = DATASET_CFG["name"]
+INPUT_DATA = DATASET_CFG.get("input_data", "")
+SEQUENCE_COL = DATASET_CFG.get("sequence_col", "sequence")
+ID_COL = DATASET_CFG.get("id_col", "id")
+LABEL_COL = DATASET_CFG.get("label_col", "label")
+
+VALID_KINDS = {"embedding_distance", "homology", "onehot_descriptor"}
+
+for kind in REDUCTIONS_CFG:
+    if kind not in VALID_KINDS:
+        raise ValueError(
+            f"Unsupported reduction section '{kind}'. Valid sections are: {sorted(VALID_KINDS)}"
+        )
+
+
+def is_enabled(kind):
+    return bool(REDUCTIONS_CFG.get(kind, {}).get("enabled", False))
+
+
+ENABLED_REDUCTIONS = [
+    kind for kind in ["embedding_distance", "homology", "onehot_descriptor"]
+    if is_enabled(kind)
+]
+
+if not ENABLED_REDUCTIONS:
+    raise ValueError(
+        "No reductions are enabled. Set at least one of: "
+        "reductions.embedding_distance.enabled, reductions.homology.enabled, "
+        "reductions.onehot_descriptor.enabled to true."
+    )
+
+if not REPS_CFG:
+    raise ValueError("Missing representations section in config.yaml.")
+
+
+# -------------------------------------------------------------------------
+# Representation helpers
+# -------------------------------------------------------------------------
+
+
+def reduction_cfg(kind):
+    if kind not in REDUCTIONS_CFG:
+        raise KeyError(f"Missing reductions.{kind} in config.yaml")
+    return REDUCTIONS_CFG[kind]
+
+
+def normalize_keys(value):
+    """Return a clean list of representation keys from a scalar or list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
+def validate_rep_key(rep_key, context="reduction"):
+    if not rep_key:
+        raise ValueError(f"Missing representation key for {context}.")
+    if rep_key not in REPS_CFG:
+        raise KeyError(
+            f"Representation key '{rep_key}' selected by {context} was not found under representations."
+        )
+
+
+def embedding_distance_keys():
+    """Embedding-distance can run over one or many representation spaces."""
+    cfg = reduction_cfg("embedding_distance")
+    keys = normalize_keys(cfg.get("representation_keys"))
+    if not keys:
+        keys = normalize_keys(cfg.get("representation_key"))
+    if not keys:
+        raise ValueError(
+            "reductions.embedding_distance is enabled but neither representation_keys nor "
+            "representation_key was provided."
+        )
+    for key in keys:
+        validate_rep_key(key, "reductions.embedding_distance")
+    return keys
+
+
+def single_representation_key(kind):
+    """Homology and one-hot descriptor reductions select a single representation."""
+    key = reduction_cfg(kind).get("representation_key")
+    validate_rep_key(key, f"reductions.{kind}")
+    return key
+
+
+def rep_cfg_by_key(rep_key):
+    validate_rep_key(rep_key)
+    return REPS_CFG[rep_key]
+
+
+def rep_analysis_cfg_by_key(rep_key):
+    # Supports both compact style:
+    #   representations.x.prefix: esm2_t6
+    # and explicit style:
+    #   representations.x.analysis.prefix: esm2_t6
+    return rep_cfg_by_key(rep_key).get("analysis", {})
+
+
+def representation_method_by_key(rep_key):
+    return rep_cfg_by_key(rep_key).get("method", "sylphy_embedding")
+
+
+def model_name_by_key(rep_key):
+    return rep_cfg_by_key(rep_key).get("model", "")
+
+
+def model_alias_by_key(rep_key):
+    rep_cfg = rep_cfg_by_key(rep_key)
+    model = model_name_by_key(rep_key)
+    return rep_cfg.get("model_alias", model.split("/")[-1] if model else rep_key)
+
+
+def analysis_prefix_by_key(rep_key):
+    rep_cfg = rep_cfg_by_key(rep_key)
+    analysis_cfg = rep_analysis_cfg_by_key(rep_key)
+    return analysis_cfg.get("prefix", rep_cfg.get("prefix", model_alias_by_key(rep_key)))
+
+
+def feature_prefix_by_key(rep_key):
+    rep_cfg = rep_cfg_by_key(rep_key)
+    analysis_cfg = rep_analysis_cfg_by_key(rep_key)
+    return analysis_cfg.get("feature_prefix", rep_cfg.get("feature_prefix", "p_"))
+
+
+def representation_dir_by_key(rep_key):
+    return str(
+        Path(EMBEDDING_ROOT)
+        / DATASET_NAME
+        / representation_method_by_key(rep_key)
+        / model_alias_by_key(rep_key)
+    )
+
+
+def full_data_file_by_key(rep_key):
+    return rep_cfg_by_key(rep_key).get(
+        "full_data",
+        str(Path(representation_dir_by_key(rep_key)) / "full_data.csv")
+    )
+
+
+def analysis_dir_by_key(rep_key):
+    return rep_analysis_cfg_by_key(rep_key).get(
+        "output_dir",
+        str(Path(representation_dir_by_key(rep_key)) / "analysis")
+    )
+
+
+def percentiles_file_by_key(rep_key):
+    analysis_cfg = rep_analysis_cfg_by_key(rep_key)
+    prefix = analysis_prefix_by_key(rep_key)
+    return analysis_cfg.get(
+        "percentiles_csv",
+        str(Path(analysis_dir_by_key(rep_key)) / "tables" / f"{prefix}_similarity_percentiles.csv")
+    )
+
+
+def embedding_npy_file_by_key(rep_key):
+    analysis_cfg = rep_analysis_cfg_by_key(rep_key)
+    explicit = analysis_cfg.get("embedding_npy", rep_cfg_by_key(rep_key).get("embedding_npy"))
+    if explicit is not None:
+        return explicit
+    return str(Path(analysis_dir_by_key(rep_key)) / "artifacts" / "training_embeddings.npy")
+
+
+# -------------------------------------------------------------------------
+# Reduction output helpers
+# -------------------------------------------------------------------------
+
+
+def experiment_name(kind, rep_key=None):
+    cfg = reduction_cfg(kind)
+
+    if kind == "embedding_distance":
+        if rep_key is None:
+            raise ValueError("embedding_distance requires rep_key for experiment_name().")
+
+        template = cfg.get("experiment_name_template")
+        if template:
+            return str(template).format(
+                rep_key=rep_key,
+                representation_key=rep_key,
+                dataset=DATASET_NAME,
+                model_alias=model_alias_by_key(rep_key),
+                prefix=analysis_prefix_by_key(rep_key),
+            )
+
+        # If a fixed experiment_name is supplied for embedding_distance, prefix it
+        # with the representation key to avoid overwriting outputs across spaces.
+        fixed_name = cfg.get("experiment_name")
+        if fixed_name:
+            return f"{rep_key}_{fixed_name}"
+
+        return f"{rep_key}_embedding_distance_reduction"
+
+    return cfg.get("experiment_name", f"{kind}_reduction")
+
+
+def reduction_root_dir(kind, rep_key=None):
+    cfg = reduction_cfg(kind)
+    configured = cfg.get("output_dir")
+
+    if configured:
+        return str(configured).format(
+            output_root=OUTPUT_ROOT,
+            dataset=DATASET_NAME,
+            experiment=experiment_name(kind, rep_key),
+            kind=kind,
+            rep_key=rep_key or "",
+            representation_key=rep_key or "",
+            model_alias=model_alias_by_key(rep_key) if rep_key else "",
+            prefix=analysis_prefix_by_key(rep_key) if rep_key else "",
+        )
+
+    if kind == "homology":
+        return str(Path(OUTPUT_ROOT) / "reduced_homology" / DATASET_NAME / experiment_name(kind))
+    if kind == "onehot_descriptor":
+        return str(Path(OUTPUT_ROOT) / "reduced_descriptor" / DATASET_NAME / experiment_name(kind))
+
+    return str(Path(OUTPUT_ROOT) / "reduced_distance" / DATASET_NAME / experiment_name(kind, rep_key))
+
+
+def embedding_distance_experiment_pattern():
+    cfg = reduction_cfg("embedding_distance")
+
+    template = cfg.get("experiment_name_template")
+    if template:
+        # For Snakemake patterns, use {rep_key} as the wildcard.
+        return str(template).format(
+            rep_key="{rep_key}",
+            representation_key="{rep_key}",
+            dataset=DATASET_NAME,
+        )
+
+    fixed_name = cfg.get("experiment_name")
+    if fixed_name:
+        return f"{{rep_key}}_{fixed_name}"
+
+    return "{rep_key}_embedding_distance_reduction"
+
+
+def reduction_summary_file(kind, rep_key=None):
+    return str(Path(reduction_root_dir(kind, rep_key)) / "reduction_summary.csv")
+
+
+def reduction_metadata_file(kind, rep_key=None):
+    return str(Path(reduction_root_dir(kind, rep_key)) / "reduction_metadata.json")
+
+
+def homology_rep_key():
+    return single_representation_key("homology")
+
+
+def onehot_rep_key():
+    return single_representation_key("onehot_descriptor")
+
+
+def homology_thresholds():
+    values = reduction_cfg("homology").get("thresholds", [0.9, 0.7, 0.5, 0.3])
+    return [str(v) for v in values]
+
+
+def homology_threshold_dir(threshold):
+    return str(Path(reduction_root_dir("homology")) / f"threshold_{threshold}")
+
+
+def homology_reduced_file(threshold):
+    return str(Path(homology_threshold_dir(threshold)) / "data_nr_mmseqs2.csv")
+
+
+def homology_mapping_file(threshold):
+    return str(Path(homology_threshold_dir(threshold)) / "map_mmseqs2.csv")
+
+
+def homology_report_file(threshold):
+    return str(Path(homology_threshold_dir(threshold)) / "report_mmseqs2.json")
+
+
+def homology_params_file(threshold):
+    return str(Path(homology_threshold_dir(threshold)) / "params_reducer.yaml")
+
+
+
+# -------------------------------------------------------------------------
+# Reduction-analysis helpers
+# -------------------------------------------------------------------------
+
+
+def analysis_enabled():
+    return bool(ANALYSIS_CFG.get("enabled", False))
+
+
+def reduction_analysis_output_dir():
+    configured = ANALYSIS_CFG.get("output_dir")
+    if configured:
+        return str(configured).format(
+            output_root=OUTPUT_ROOT,
+            dataset=DATASET_NAME,
+        )
+    return str(Path(OUTPUT_ROOT) / "reduction_analysis" / DATASET_NAME)
+
+
+def reduction_analysis_done_file():
+    return str(Path(reduction_analysis_output_dir()) / "analysis.done")
+
+
+def enabled_summary_files():
+    files = []
+
+    if is_enabled("embedding_distance"):
+        for rep_key in embedding_distance_keys():
+            files.append(reduction_summary_file("embedding_distance", rep_key))
+
+    if is_enabled("homology"):
+        files.append(reduction_summary_file("homology"))
+
+    if is_enabled("onehot_descriptor"):
+        files.append(reduction_summary_file("onehot_descriptor"))
+
+    return files
+
+
+def display_label_for_rep(rep_key):
+    rep_cfg = rep_cfg_by_key(rep_key)
+    return rep_cfg.get("label", rep_cfg.get("display_label", rep_key))
+
+
+def reduction_summary_specs():
+    """Return specs consumed by summary_reduction.py: label::kind::path."""
+    specs = []
+
+    if is_enabled("embedding_distance"):
+        for rep_key in embedding_distance_keys():
+            label = display_label_for_rep(rep_key)
+            specs.append(
+                f"{label}::embedding_distance::{reduction_summary_file('embedding_distance', rep_key)}"
+            )
+
+    if is_enabled("homology"):
+        label = reduction_cfg("homology").get("label", "Homology MMseqs2")
+        specs.append(f"{label}::homology::{reduction_summary_file('homology')}")
+
+    if is_enabled("onehot_descriptor"):
+        label = reduction_cfg("onehot_descriptor").get("label", "One-hot descriptor")
+        specs.append(f"{label}::onehot_descriptor::{reduction_summary_file('onehot_descriptor')}")
+
+    return specs
+
+
+def enabled_targets():
+    targets = []
+
+    if is_enabled("embedding_distance"):
+        for rep_key in embedding_distance_keys():
+            targets.append(reduction_summary_file("embedding_distance", rep_key))
+            targets.append(reduction_metadata_file("embedding_distance", rep_key))
+
+    if is_enabled("homology"):
+        targets.append(reduction_summary_file("homology"))
+        targets.append(reduction_metadata_file("homology"))
+
+    if is_enabled("onehot_descriptor"):
+        targets.append(reduction_summary_file("onehot_descriptor"))
+        targets.append(reduction_metadata_file("onehot_descriptor"))
+
+    if analysis_enabled():
+        targets.append(reduction_analysis_done_file())
+
+    return targets
+
+
+# -------------------------------------------------------------------------
+# General utilities
+# -------------------------------------------------------------------------
+
+
+def run_command(cmd):
+    print("[CMD]", " ".join(map(str, cmd)))
+    subprocess.run(cmd, check=True)
+
+
+def write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def assert_file_exists(path, description):
+    if path is None or str(path).lower() in {"", "none", "null"}:
+        raise FileNotFoundError(f"{description} path is empty or null.")
+    if not Path(path).exists():
+        raise FileNotFoundError(
+            f"{description} not found: {path}\n"
+            "Check your config paths or run the previous workflow first."
+        )
+
+
+def count_rows_csv(path):
+    if not Path(path).exists():
+        return None
+    try:
+        return int(pd.read_csv(path).shape[0])
+    except Exception:
+        return None
+
+
+def build_metadata(kind, rep_key=None):
+    if kind == "embedding_distance":
+        selected_rep_key = rep_key
+    elif kind == "homology":
+        selected_rep_key = homology_rep_key()
+    elif kind == "onehot_descriptor":
+        selected_rep_key = onehot_rep_key()
+    else:
+        raise ValueError(f"Unsupported reduction kind: {kind}")
+
+    red_cfg = reduction_cfg(kind)
+    return {
+        "dataset": {
+            "name": DATASET_NAME,
+            "input_data": INPUT_DATA,
+            "full_data": full_data_file_by_key(selected_rep_key),
+            "sequence_col": SEQUENCE_COL,
+            "id_col": ID_COL,
+            "label_col": LABEL_COL,
+        },
+        "experiment": {
+            "name": experiment_name(kind, rep_key) if kind == "embedding_distance" else experiment_name(kind),
+        },
+        "representation": {
+            "key": selected_rep_key,
+            "method": representation_method_by_key(selected_rep_key),
+            "model": model_name_by_key(selected_rep_key),
+            "model_alias": model_alias_by_key(selected_rep_key),
+            "prefix": analysis_prefix_by_key(selected_rep_key),
+            "representation_dir": representation_dir_by_key(selected_rep_key),
+        },
+        "analysis": {
+            "analysis_dir": analysis_dir_by_key(selected_rep_key),
+            "prefix": analysis_prefix_by_key(selected_rep_key),
+            "feature_prefix": feature_prefix_by_key(selected_rep_key),
+            "percentiles_csv": percentiles_file_by_key(selected_rep_key),
+            "embedding_npy": embedding_npy_file_by_key(selected_rep_key),
+        },
+        "reduction": {
+            "kind": kind,
+            "enabled": red_cfg.get("enabled", False),
+            "strategy": red_cfg.get("strategy"),
+            "output_dir": reduction_root_dir(kind, rep_key) if kind == "embedding_distance" else reduction_root_dir(kind),
+            "summary": reduction_summary_file(kind, rep_key) if kind == "embedding_distance" else reduction_summary_file(kind),
+            "thresholds": red_cfg.get("thresholds"),
+            "coverage": red_cfg.get("coverage"),
+            "descriptor_prefix": red_cfg.get("descriptor_prefix"),
+            "representation_key": selected_rep_key,
+        },
+    }
+
+
+# -------------------------------------------------------------------------
+# Targets
+# -------------------------------------------------------------------------
+
+rule all:
+    input:
+        enabled_targets()
+
+
+
+# -------------------------------------------------------------------------
+# Post-reduction analysis
+# -------------------------------------------------------------------------
+
+if analysis_enabled():
+
+    rule analyse_reductions:
+        input:
+            summaries=enabled_summary_files(),
+            input_data=INPUT_DATA
+        output:
+            done=reduction_analysis_done_file()
+        params:
+            output_dir=lambda wc: reduction_analysis_output_dir(),
+            script=lambda wc: ANALYSIS_CFG.get(
+                "script",
+                "../../notebooks_and_scripts/scripts_for_pipelines/summary_reduction.py",
+            ),
+            fig_format=lambda wc: ANALYSIS_CFG.get("fig_format", "png"),
+            dpi=lambda wc: int(ANALYSIS_CFG.get("dpi", 300)),
+            run_general=lambda wc: bool(ANALYSIS_CFG.get("general", True)),
+            run_by_label=lambda wc: bool(ANALYSIS_CFG.get("by_label", True))
+        run:
+            assert_file_exists(params.script, "reduction-analysis script")
+            assert_file_exists(input.input_data, "original input dataset")
+            Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+            cmd = [
+                "python", params.script,
+                "--dataset-name", DATASET_NAME,
+                "--input-data", input.input_data,
+                "--label-col", LABEL_COL,
+                "--id-col", ID_COL,
+                "--sequence-col", SEQUENCE_COL,
+                "--output-dir", params.output_dir,
+                "--fig-format", params.fig_format,
+                "--dpi", str(params.dpi),
+            ]
+
+            if params.run_general:
+                cmd.append("--general")
+
+            if params.run_by_label:
+                cmd.append("--by-label")
+
+            for spec in reduction_summary_specs():
+                cmd.extend(["--reduction-summary", spec])
+
+            run_command(cmd)
+
+            if not Path(output.done).exists():
+                raise FileNotFoundError(f"Expected analysis done file was not created: {output.done}")
+
+
+# -------------------------------------------------------------------------
+# Embedding-distance reduction
+# -------------------------------------------------------------------------
+
+if is_enabled("embedding_distance"):
+
+    # The default output naming is stable and dataset-safe:
+    #   reduced_distance/<dataset>/<rep_key>_embedding_distance_reduction/
+    # If you use output_dir or experiment_name_template in the config, keep {rep_key}
+    # in the folder name when running multiple representations to avoid overwrites.
+    EMBED_EXPERIMENT_PATTERN = embedding_distance_experiment_pattern()
+    EMBED_SUMMARY_PATTERN = str(
+        Path(OUTPUT_ROOT) / "reduced_distance" / DATASET_NAME / EMBED_EXPERIMENT_PATTERN / "reduction_summary.csv"
+    )
+    EMBED_METADATA_PATTERN = str(
+        Path(OUTPUT_ROOT) / "reduced_distance" / DATASET_NAME / EMBED_EXPERIMENT_PATTERN / "reduction_metadata.json"
+    )
+
+    # If the user provided an explicit template, use it as a Snakemake pattern.
+    # This supports output_dir placeholders: {output_root}, {dataset}, {rep_key}, {kind}.
+    if reduction_cfg("embedding_distance").get("output_dir"):
+        configured_pattern = str(reduction_cfg("embedding_distance")["output_dir"]).format(
+            output_root=OUTPUT_ROOT,
+            dataset=DATASET_NAME,
+            kind="embedding_distance",
+            rep_key="{rep_key}",
+            representation_key="{rep_key}",
+            experiment="{rep_key}_embedding_distance_reduction",
+            model_alias="{rep_key}",
+            prefix="{rep_key}",
+        )
+        EMBED_SUMMARY_PATTERN = str(Path(configured_pattern) / "reduction_summary.csv")
+        EMBED_METADATA_PATTERN = str(Path(configured_pattern) / "reduction_metadata.json")
+
+    EMBED_REP_KEY_REGEX = "|".join(re.escape(k) for k in embedding_distance_keys())
+
+    rule reduce_embedding_distance:
+        wildcard_constraints:
+            rep_key=EMBED_REP_KEY_REGEX
+        input:
+            full_data=lambda wc: full_data_file_by_key(wc.rep_key),
+            embedding_npy=lambda wc: embedding_npy_file_by_key(wc.rep_key),
+            percentiles=lambda wc: percentiles_file_by_key(wc.rep_key)
+        output:
+            summary=EMBED_SUMMARY_PATTERN
+        params:
+            output_dir=lambda wc: reduction_root_dir("embedding_distance", wc.rep_key),
+            script=lambda wc: reduction_cfg("embedding_distance").get(
+                "script",
+                "../../notebooks_and_scripts/scripts_for_pipelines/run_biosieve_reducers_from_percentiles.py"
+            ),
+            biosieve_exec=lambda wc: reduction_cfg("embedding_distance").get("biosieve_exec", "biosieve"),
+            strategy=lambda wc: reduction_cfg("embedding_distance").get("strategy", "embedding_cosine"),
+            n_jobs=lambda wc: int(reduction_cfg("embedding_distance").get("n_jobs", 8)),
+            label_col=LABEL_COL,
+            id_col=ID_COL
+        run:
+            assert_file_exists(input.full_data, "full_data.csv")
+            assert_file_exists(input.embedding_npy, "training_embeddings.npy")
+            assert_file_exists(input.percentiles, "similarity percentiles CSV")
+            assert_file_exists(params.script, "embedding-distance reduction script")
+
+            Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+            cmd = [
+                "python", params.script,
+                "--embedding-npy", input.embedding_npy,
+                "--percentiles-csv", input.percentiles,
+                "--input-data", input.full_data,
+                "--output-dir", params.output_dir,
+                "--label-col", params.label_col,
+                "--id-col", params.id_col,
+                "--biosieve-exec", params.biosieve_exec,
+                "--strategy", params.strategy,
+                "--n-jobs", str(params.n_jobs),
+            ]
+            run_command(cmd)
+
+            if not Path(output.summary).exists():
+                raise FileNotFoundError(f"Expected reduction summary was not created: {output.summary}")
+
+
+    rule write_embedding_distance_metadata:
+        wildcard_constraints:
+            rep_key=EMBED_REP_KEY_REGEX
+        input:
+            summary=EMBED_SUMMARY_PATTERN
+        output:
+            metadata=EMBED_METADATA_PATTERN
+        run:
+            write_json(output.metadata, build_metadata("embedding_distance", wildcards.rep_key))
+
+
+# -------------------------------------------------------------------------
+# One-hot descriptor/euclidean reduction
+# -------------------------------------------------------------------------
+
+if is_enabled("onehot_descriptor"):
+
+    rule reduce_onehot_descriptor:
+        input:
+            full_data=lambda wc: full_data_file_by_key(onehot_rep_key()),
+            percentiles=lambda wc: percentiles_file_by_key(onehot_rep_key())
+        output:
+            summary=reduction_summary_file("onehot_descriptor")
+        params:
+            output_dir=lambda wc: reduction_root_dir("onehot_descriptor"),
+            script=lambda wc: reduction_cfg("onehot_descriptor").get(
+                "script",
+                "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
+            ),
+            biosieve_exec=lambda wc: reduction_cfg("onehot_descriptor").get("biosieve_exec", "biosieve"),
+            strategy=lambda wc: reduction_cfg("onehot_descriptor").get("strategy", "descriptor_euclidean"),
+            descriptor_prefix=lambda wc: reduction_cfg("onehot_descriptor").get(
+                "descriptor_prefix",
+                feature_prefix_by_key(onehot_rep_key())
+            ),
+            percentile_col=lambda wc: reduction_cfg("onehot_descriptor").get("percentile_col", "percentile"),
+            threshold_col=lambda wc: reduction_cfg("onehot_descriptor").get("threshold_col", "similarity")
+        run:
+            assert_file_exists(input.full_data, "full_data.csv")
+            assert_file_exists(input.percentiles, "similarity percentiles CSV")
+            assert_file_exists(params.script, "descriptor-euclidean reduction script")
+
+            Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+            cmd = [
+                "python", params.script,
+                "--percentiles-csv", input.percentiles,
+                "--input-data", input.full_data,
+                "--output-dir", params.output_dir,
+                "--biosieve-exec", params.biosieve_exec,
+                "--strategy", params.strategy,
+                "--descriptor-prefix", params.descriptor_prefix,
+                "--percentile-col", params.percentile_col,
+                "--threshold-col", params.threshold_col,
+            ]
+            run_command(cmd)
+
+            if not Path(output.summary).exists():
+                raise FileNotFoundError(f"Expected reduction summary was not created: {output.summary}")
+
+
+    rule write_onehot_descriptor_metadata:
+        input:
+            summary=reduction_summary_file("onehot_descriptor")
+        output:
+            metadata=reduction_metadata_file("onehot_descriptor")
+        run:
+            write_json(output.metadata, build_metadata("onehot_descriptor"))
+
+
+# -------------------------------------------------------------------------
+# Homology reduction with MMseqs2/Biosieve
+# -------------------------------------------------------------------------
+
+if is_enabled("homology"):
+
+    rule reduce_homology_threshold:
+        input:
+            full_data=lambda wc: full_data_file_by_key(homology_rep_key())
+        output:
+            reduced=homology_reduced_file("{threshold}"),
+            mapping=homology_mapping_file("{threshold}"),
+            report=homology_report_file("{threshold}"),
+            params_yaml=homology_params_file("{threshold}")
+        params:
+            output_dir=lambda wc: homology_threshold_dir(wc.threshold),
+            biosieve_exec=lambda wc: reduction_cfg("homology").get("biosieve_exec", "biosieve"),
+            strategy=lambda wc: reduction_cfg("homology").get("strategy", "mmseqs2"),
+            min_seq_id=lambda wc: float(wc.threshold),
+            coverage=lambda wc: reduction_cfg("homology").get("coverage", 0.8),
+            cov_mode=lambda wc: reduction_cfg("homology").get("cov_mode", None),
+            extra_params=lambda wc: reduction_cfg("homology").get("extra_params", {})
+        run:
+            assert_file_exists(input.full_data, "full_data.csv")
+            Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+            strategy_params = dict(params.extra_params)
+            strategy_params["min_seq_id"] = float(params.min_seq_id)
+            strategy_params["coverage"] = float(params.coverage)
+            if params.cov_mode is not None:
+                strategy_params["cov_mode"] = params.cov_mode
+
+            params_payload = {params.strategy: strategy_params}
+
+            with open(output.params_yaml, "w", encoding="utf-8") as handle:
+                yaml.safe_dump(params_payload, handle, sort_keys=False)
+
+            cmd = [
+                params.biosieve_exec, "reduce",
+                "-i", input.full_data,
+                "-o", output.reduced,
+                "--strategy", params.strategy,
+                "--mapping-output", output.mapping,
+                "--report-output", output.report,
+                "--params", output.params_yaml,
+            ]
+            run_command(cmd)
+
+
+    rule summarize_homology_reductions:
+        input:
+            reduced=expand(homology_reduced_file("{threshold}"), threshold=homology_thresholds()),
+            mapping=expand(homology_mapping_file("{threshold}"), threshold=homology_thresholds()),
+            report=expand(homology_report_file("{threshold}"), threshold=homology_thresholds())
+        output:
+            summary=reduction_summary_file("homology")
+        run:
+            rows = []
+            input_full_data = full_data_file_by_key(homology_rep_key())
+            n_input = count_rows_csv(input_full_data)
+
+            for threshold in homology_thresholds():
+                reduced_path = homology_reduced_file(threshold)
+                mapping_path = homology_mapping_file(threshold)
+                report_path = homology_report_file(threshold)
+
+                rows.append({
+                    "reduction_kind": "homology",
+                    "strategy": reduction_cfg("homology").get("strategy", "mmseqs2"),
+                    "threshold": threshold,
+                    "min_seq_id": threshold,
+                    "coverage": reduction_cfg("homology").get("coverage", 0.8),
+                    "input_data": input_full_data,
+                    "reduced_dataset": reduced_path,
+                    "mapping_file": mapping_path,
+                    "report_file": report_path,
+                    "n_input": n_input,
+                    "n_reduced": count_rows_csv(reduced_path),
+                    "id_col": ID_COL,
+                    "label_col": LABEL_COL,
+                    "sequence_col": SEQUENCE_COL,
+                })
+
+            Path(output.summary).parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows).to_csv(output.summary, index=False)
+
+
+    rule write_homology_metadata:
+        input:
+            summary=reduction_summary_file("homology")
+        output:
+            metadata=reduction_metadata_file("homology")
+        run:
+            write_json(output.metadata, build_metadata("homology"))

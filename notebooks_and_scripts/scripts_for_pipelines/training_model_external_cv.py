@@ -15,32 +15,6 @@ Expected directory layout:
         │   ├── val.csv
         │   └── test.csv
         └── ...
-
-This script assumes that train/val/test CSV files already contain:
-- the target label column
-- the descriptor columns used for training
-
-Main behavior:
-- iterates over all fold_* directories
-- for each hyperparameter configuration of the selected algorithm:
-    - fits on train.csv
-    - evaluates on val.csv and test.csv
-- saves:
-    - one CSV with results by fold
-    - one CSV with aggregated mean/std summaries by configuration
-
-Example:
-python training_model_external_cv_v2.py \
-    --seed 13 \
-    --partition_strategy random_kfold \
-    --representation_strategy ankh2_ext1 \
-    --redundancy_strategy p97 \
-    --splits_root ../../split_process/random_kfold_experiment \
-    --output_dir ../../training_models/random_kfold/ankh2_ext1/p97 \
-    --label_col label \
-    --feature_prefix p_ \
-    --config ../../grids/config_hyperparameters_algorithm.json \
-    --algorithm RandomForestClassifier
 """
 
 from __future__ import annotations
@@ -100,72 +74,29 @@ except Exception:  # pragma: no cover
 METRIC_COLUMNS = ["accuracy", "precision", "recall", "f1", "mcc"]
 
 
+def scaler_suffix(scaler_name: str) -> str:
+    scaler = str(scaler_name).strip().lower()
+    if scaler in {"", "none", "false", "no"}:
+        return "_scaler_none"
+    return f"_scaler_{scaler}"
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Train ML models using precomputed external folds."
     )
 
     p.add_argument("--seed", required=True, type=int, help="Experiment seed.")
-    p.add_argument(
-        "--partition_strategy",
-        required=True,
-        type=str,
-        help="Partition strategy name to store in output metadata.",
-    )
-    p.add_argument(
-        "--representation_strategy",
-        required=True,
-        type=str,
-        help="Representation strategy name to store in output metadata.",
-    )
-    p.add_argument(
-        "--redundancy_strategy",
-        required=True,
-        type=str,
-        help="Redundancy strategy name to store in output metadata.",
-    )
-    p.add_argument(
-        "--splits_root",
-        required=True,
-        type=Path,
-        help="Root directory containing fold_* directories.",
-    )
-    p.add_argument(
-        "--output_dir",
-        required=True,
-        type=Path,
-        help="Directory where outputs will be written.",
-    )
-    p.add_argument(
-        "--label_col",
-        default="label",
-        type=str,
-        help="Target label column name.",
-    )
-    p.add_argument(
-        "--feature_prefix",
-        default="p_",
-        type=str,
-        help="Prefix used to select descriptor columns.",
-    )
-    p.add_argument(
-        "--feature_cols",
-        nargs="+",
-        default=None,
-        help="Optional explicit list of feature columns. Overrides --feature_prefix.",
-    )
-    p.add_argument(
-        "--config",
-        required=True,
-        type=Path,
-        help="JSON file containing parameter grids under 'param_grids'.",
-    )
-    p.add_argument(
-        "--algorithm",
-        required=True,
-        type=str,
-        help="Classifier name to train.",
-    )
+    p.add_argument("--partition_strategy", required=True, type=str)
+    p.add_argument("--representation_strategy", required=True, type=str)
+    p.add_argument("--redundancy_strategy", required=True, type=str)
+    p.add_argument("--splits_root", required=True, type=Path)
+    p.add_argument("--output_dir", required=True, type=Path)
+    p.add_argument("--label_col", default="label", type=str)
+    p.add_argument("--feature_prefix", default="p_", type=str)
+    p.add_argument("--feature_cols", nargs="+", default=None)
+    p.add_argument("--config", required=True, type=Path)
+    p.add_argument("--algorithm", required=True, type=str)
     
     p.add_argument(
         "--scaler",
@@ -205,17 +136,15 @@ def setup_logger(log_path: Path) -> logging.Logger:
     logger.addHandler(ch)
     return logger
 
+
 def get_scaler(scaler_name: str):
-    """
-    Return the preprocessing object associated with the requested strategy.
-    """
     registry = {
         "none": None,
         "standard": StandardScaler(),
         "minmax": MinMaxScaler(),
         "robust": RobustScaler(),
         "normalizer_l2": Normalizer(norm="l2"),
-        "maxabs" : MaxAbsScaler(),
+        "maxabs": MaxAbsScaler(),
     }
 
     if scaler_name not in registry:
@@ -225,6 +154,7 @@ def get_scaler(scaler_name: str):
         )
 
     return registry[scaler_name]
+
 
 def get_model_class(algorithm: str):
     registry = {
@@ -325,6 +255,7 @@ def build_pipeline(model: Any, scaler_name: str) -> Pipeline:
         ("classifier", model),
     ])
 
+
 def load_param_grid(config_path: Path, algorithm: str) -> list[dict[str, Any]]:
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -411,10 +342,15 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S") if args.timestamp else None
-    suffix = f"_{ts}" if ts else ""
+    timestamp_suffix = f"_{ts}" if ts else ""
+    scaler_name_suffix = scaler_suffix(args.scaler)
 
-    out_fold = args.output_dir / f"exploration_by_fold_{args.algorithm}{suffix}.csv"
-    out_log = args.output_dir / f"status_{args.algorithm}{suffix}.log"
+    out_fold = args.output_dir / (
+        f"exploration_by_fold_{args.algorithm}{scaler_name_suffix}{timestamp_suffix}.csv"
+    )
+    out_log = args.output_dir / (
+        f"status_{args.algorithm}{scaler_name_suffix}{timestamp_suffix}.log"
+    )
 
     logger = setup_logger(out_log)
     logger.info("Starting external fold exploration")
@@ -502,7 +438,6 @@ def main() -> None:
         raise RuntimeError("No results were generated. Check logs for details.")
 
     df_fold = pd.DataFrame(results_by_fold)
-
     df_fold.to_csv(out_fold, index=False)
 
     logger.info(f"Fold-level results saved to {out_fold}")

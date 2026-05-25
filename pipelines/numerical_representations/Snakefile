@@ -1,0 +1,451 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import shlex
+import subprocess
+
+import pandas as pd
+
+
+# ============================================================
+# CONFIG OVERRIDES
+# ============================================================
+# Base configuration comes from config/config.yaml.
+# SLURM/grid-specific values can override it through Snakemake CLI:
+#
+# snakemake --config representation__model="Rostlab/prot_bert" \
+#                    representation__model_alias="prot_bert" \
+#                    representation__batch_size=8 \
+#                    analysis__enabled=true
+#
+# Convention:
+#   section__parameter=value
+# becomes:
+#   config[section][parameter] = value
+#
+# Example:
+#   representation__model=facebook/esm2_t12_35M_UR50D
+# becomes:
+#   representation:
+#     model: facebook/esm2_t12_35M_UR50D
+# ============================================================
+
+VALID_OVERRIDE_SECTIONS = {"global", "dataset", "representation", "analysis"}
+
+
+def parse_override_value(value):
+    """Cast values passed from --config or a SLURM grid."""
+    if value is None:
+        return None
+
+    if isinstance(value, (bool, int, float)):
+        return value
+
+    value = str(value).strip()
+    low = value.lower()
+
+    if low in {"", "none", "null", "nan", "na", "-"}:
+        return None
+
+    if low in {"true", "1", "yes", "y"}:
+        return True
+
+    if low in {"false", "0", "no", "n"}:
+        return False
+
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    try:
+        return float(value)
+    except ValueError:
+        pass
+
+    return value
+
+
+def apply_section_overrides(cfg):
+    """
+    Apply CLI overrides using keys like representation__model or analysis__enabled.
+    This allows the same Snakefile to be configured from config.yaml or a SLURM grid.
+    """
+    for key, value in list(cfg.items()):
+        if "__" not in key:
+            continue
+
+        section, param = key.split("__", 1)
+
+        if section not in VALID_OVERRIDE_SECTIONS:
+            print(f"[WARNING] Ignoring unknown override section: {section} from key {key}")
+            continue
+
+        if section not in cfg or cfg[section] is None:
+            cfg[section] = {}
+
+        if not isinstance(cfg[section], dict):
+            raise ValueError(
+                f"Cannot apply override {key} because config['{section}'] is not a dictionary."
+            )
+
+        parsed_value = parse_override_value(value)
+        cfg[section][param] = parsed_value
+        print(f"[CONFIG OVERRIDE] {section}.{param} = {parsed_value}")
+
+
+apply_section_overrides(config)
+
+
+# ============================================================
+# CONFIG SECTIONS
+# ============================================================
+
+GLOBAL_CFG = config.get("global", {})
+DATASET_CFG = config["dataset"]
+REP_CFG = config.get("representation", {})
+ANALYSIS_CFG = config.get("analysis", {})
+
+EMBEDDING_ROOT = GLOBAL_CFG["embedding_root"].rstrip("/")
+
+DATASET_NAME = DATASET_CFG["name"]
+INPUT_DATA = DATASET_CFG["input_data"]
+SEQUENCE_COL = DATASET_CFG["sequence_col"]
+ID_COL = DATASET_CFG["id_col"]
+LABEL_COL = DATASET_CFG["label_col"]
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def as_bool(value, default=False):
+    """Convert YAML/string values to bool."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def has_value(value):
+    """Return True only for real values, not YAML null/empty strings."""
+    if value is None:
+        return False
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null", "nan", "na", "-"}:
+        return False
+    return True
+
+
+def run_command(cmd):
+    """Print and run a command without leaving orphan backslashes in optional args."""
+    printable = " ".join(shlex.quote(str(x)) for x in cmd)
+    print(f"[CMD] {printable}")
+    subprocess.run([str(x) for x in cmd], check=True)
+
+
+# ============================================================
+# FLAGS
+# ============================================================
+
+REPRESENTATION_ENABLED = as_bool(REP_CFG.get("enabled", True), True)
+RUN_REPRESENTATION = as_bool(
+    REP_CFG.get(
+        "run_representation",
+        REP_CFG.get("run_embedding", False) or REP_CFG.get("run_encoding", False),
+    ),
+    False,
+)
+
+ANALYSIS_ENABLED = as_bool(ANALYSIS_CFG.get("enabled", False), False)
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+def model_alias():
+    """Return a filesystem-friendly name for the representation."""
+    return REP_CFG.get("model_alias", REP_CFG.get("model", "representation").split("/")[-1])
+
+
+def representation_method():
+    """Return the representation method."""
+    return REP_CFG.get("method", "sylphy_embedding")
+
+
+def representation_dir():
+    """Directory where representation outputs are stored."""
+    return f"{EMBEDDING_ROOT}/{DATASET_NAME}/{representation_method()}/{model_alias()}"
+
+
+def output_format():
+    """Representation output format for embedding outputs."""
+    return REP_CFG.get("output_format", "csv").lower()
+
+
+def representation_file():
+    """Main representation file expected by the workflow."""
+    method = representation_method()
+
+    if method == "sylphy_one_hot":
+        return f"{representation_dir()}/encoded.csv"
+
+    if method == "sylphy_embedding":
+        return f"{representation_dir()}/embeddings.{output_format()}"
+
+    raise ValueError(f"Unsupported representation method: {method}")
+
+
+def full_data_file():
+    """Dataset merged with numerical representation."""
+    return f"{representation_dir()}/full_data.csv"
+
+
+def analysis_dir():
+    """
+    Directory for embedding-space analysis.
+
+    Priority:
+    1. analysis.output_dir
+    2. global.analysis_root / dataset / method / alias
+    3. representation_dir / analysis
+    """
+    if ANALYSIS_CFG.get("output_dir"):
+        return ANALYSIS_CFG["output_dir"].rstrip("/")
+
+    if GLOBAL_CFG.get("analysis_root"):
+        root = GLOBAL_CFG["analysis_root"].rstrip("/")
+        return f"{root}/{DATASET_NAME}/{representation_method()}/{model_alias()}"
+
+    return f"{representation_dir()}/analysis"
+
+
+def analysis_prefix():
+    """Prefix used for analysis output files."""
+    return ANALYSIS_CFG.get("prefix", model_alias())
+
+
+def analysis_training_embeddings_file():
+    return f"{analysis_dir()}/artifacts/training_embeddings.npy"
+
+
+def analysis_percentiles_file():
+    return f"{analysis_dir()}/tables/{analysis_prefix()}_similarity_percentiles.csv"
+
+
+def analysis_done_file():
+    return f"{analysis_dir()}/analysis.done"
+
+
+# ============================================================
+# RULE ALL
+# ============================================================
+
+def final_targets():
+    targets = []
+
+    if REPRESENTATION_ENABLED:
+        targets.extend([representation_file(), full_data_file()])
+
+    if ANALYSIS_ENABLED:
+        targets.append(analysis_done_file())
+
+    if not targets:
+        raise ValueError(
+            "No targets selected. Set representation.enabled: true and/or analysis.enabled: true."
+        )
+
+    return targets
+
+
+rule all:
+    input:
+        final_targets()
+
+
+# ============================================================
+# REPRESENT DATASET
+# ============================================================
+
+rule represent_dataset:
+    input:
+        input_data=INPUT_DATA
+    output:
+        rep=representation_file(),
+        full_data=full_data_file()
+    params:
+        rep_dir=representation_dir(),
+        method=representation_method(),
+        model=REP_CFG.get("model", ""),
+        encoder=REP_CFG.get("encoder", "one_hot"),
+        device=REP_CFG.get("device", "cuda"),
+        precision=REP_CFG.get("precision", "fp16"),
+        batch_size=REP_CFG.get("batch_size", 16),
+        max_length=REP_CFG.get("max_length", None),
+        sequence_col=SEQUENCE_COL,
+        id_col=ID_COL,
+        label_col=LABEL_COL,
+        output_format=output_format(),
+        run_representation=RUN_REPRESENTATION,
+        enabled=REPRESENTATION_ENABLED,
+    run:
+        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+
+        rep_path = Path(output.rep)
+        full_data_path = Path(output.full_data)
+
+        input_df = pd.read_csv(input.input_data)
+        required_cols = [params.sequence_col, params.id_col, params.label_col]
+        missing_cols = [col for col in required_cols if col not in input_df.columns]
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns in input data: {missing_cols}. "
+                f"Available columns: {input_df.columns.tolist()}"
+            )
+
+        # Reuse full_data only when both required outputs already exist.
+        # This avoids declaring success while Snakemake is still missing the representation file.
+        if rep_path.exists() and full_data_path.exists():
+            print(f"[INFO] Reusing existing representation: {output.rep}")
+            print(f"[INFO] Reusing existing full_data: {output.full_data}")
+            reused_df = pd.read_csv(output.full_data)
+            missing_cols = [col for col in required_cols if col not in reused_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Existing full_data file is missing required columns: {missing_cols}. "
+                    f"Available columns: {reused_df.columns.tolist()}"
+                )
+            return
+
+        # If the representation file does not exist, generate it only when allowed.
+        if not rep_path.exists():
+            if (not params.enabled) or (not params.run_representation):
+                raise FileNotFoundError(
+                    f"Representation file not found: {output.rep}. "
+                    f"To generate it, set representation.enabled: true and "
+                    f"representation.run_representation: true."
+                )
+
+            print(f"[INFO] Generating representation in: {params.rep_dir}")
+
+            if params.method == "sylphy_one_hot":
+                cmd = [
+                    "sylphy",
+                    "encode-sequences",
+                    "--encoder", params.encoder,
+                    "--input-data", input.input_data,
+                    "--sequence-identifier", params.sequence_col,
+                    "--output", output.rep,
+                ]
+
+                if has_value(params.max_length):
+                    cmd.extend(["--max-length", str(params.max_length)])
+
+                run_command(cmd)
+
+            elif params.method == "sylphy_embedding":
+                cmd = [
+                    "sylphy",
+                    "get-embedding",
+                    "--model", params.model,
+                    "--input-data", input.input_data,
+                    "--sequence-identifier", params.sequence_col,
+                    "--output", output.rep,
+                    "--device", params.device,
+                    "--precision", params.precision,
+                    "--batch-size", str(params.batch_size),
+                ]
+
+                if has_value(params.max_length):
+                    cmd.extend(["--max-length", str(params.max_length)])
+
+                run_command(cmd)
+
+            else:
+                raise ValueError(f"Unsupported representation method: {params.method}")
+
+        else:
+            print(f"[INFO] Reusing existing representation: {output.rep}")
+
+        # Build full_data.csv from the original dataset + representation.
+        if params.output_format == "csv" or params.method == "sylphy_one_hot":
+            rep_df = pd.read_csv(output.rep)
+        elif params.output_format == "parquet":
+            rep_df = pd.read_parquet(output.rep)
+        else:
+            raise ValueError(f"Unsupported output format: {params.output_format}")
+
+        if len(input_df) != len(rep_df):
+            raise ValueError(
+                f"Row mismatch between input ({len(input_df)}) and representation ({len(rep_df)})."
+            )
+
+        duplicated_cols = [col for col in rep_df.columns if col in input_df.columns]
+        if duplicated_cols:
+            rep_df = rep_df.drop(columns=duplicated_cols)
+
+        full_df = pd.concat(
+            [input_df.reset_index(drop=True), rep_df.reset_index(drop=True)],
+            axis=1,
+        )
+        full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+        full_df.to_csv(output.full_data, index=False)
+        print(f"[INFO] Saved full_data: {output.full_data}")
+
+
+# ============================================================
+# ANALYSE EMBEDDING SPACE
+# ============================================================
+
+rule analyse_embedding_space:
+    input:
+        full_data=full_data_file()
+    output:
+        npy=analysis_training_embeddings_file(),
+        percentiles=analysis_percentiles_file(),
+        done=analysis_done_file()
+    params:
+        output_dir=analysis_dir(),
+        script=ANALYSIS_CFG.get("script", ""),
+        sequence_col=SEQUENCE_COL,
+        label_col=LABEL_COL,
+        id_col=ID_COL,
+        feature_prefix=ANALYSIS_CFG.get("feature_prefix", "p_"),
+        prefix=analysis_prefix(),
+        random_state=ANALYSIS_CFG.get("random_state", 42),
+        tsne_perplexity=ANALYSIS_CFG.get("tsne_perplexity", 30.0),
+        tsne_max_iter=ANALYSIS_CFG.get("tsne_max_iter", 1000),
+        umap_neighbors=ANALYSIS_CFG.get("umap_neighbors", 15),
+        umap_min_dist=ANALYSIS_CFG.get("umap_min_dist", 0.1),
+        umap_metric=ANALYSIS_CFG.get("umap_metric", "euclidean"),
+        scaling_strategy=ANALYSIS_CFG.get("scaling_strategy", "none"),
+    run:
+        if not params.script:
+            raise ValueError(
+                "analysis.script is empty. Add the path to embedding_analysis_space.py "
+                "or set analysis.enabled: false."
+            )
+
+        Path(params.output_dir).mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "python", params.script,
+            "--emb-train", input.full_data,
+            "--output-dir", params.output_dir,
+            "--label-col", params.label_col,
+            "--sequence-col", params.sequence_col,
+            "--id-col", params.id_col,
+            "--feature-prefix", params.feature_prefix,
+            "--prefix", params.prefix,
+            "--random-state", str(params.random_state),
+            "--tsne-perplexity", str(params.tsne_perplexity),
+            "--tsne-max-iter", str(params.tsne_max_iter),
+            "--umap-neighbors", str(params.umap_neighbors),
+            "--umap-min-dist", str(params.umap_min_dist),
+            "--umap-metric", params.umap_metric,
+            "--scaling-strategy", params.scaling_strategy,
+        ]
+
+        run_command(cmd)
+        Path(output.done).touch()

@@ -1,0 +1,344 @@
+configfile: "config/config.yaml"
+
+from pathlib import Path
+import json
+from datetime import datetime
+import pandas as pd
+
+
+# ============================================================
+# Robust boolean parsing
+# ============================================================
+
+def as_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "on"}
+
+
+# ============================================================
+# Config
+# ============================================================
+
+GLOBAL_CFG = config.get("global", {})
+DATASET_CFG = config.get("dataset", {})
+INPUT_CFG = config.get("input", {})
+OUTPUT_CFG = config.get("output", {})
+SELECTION_CFG = config.get("selection", {})
+TRAIN_CFG = config.get("training", {})
+METADATA_CFG = config.get("metadata", {})
+
+OUTPUT_ROOT = Path(GLOBAL_CFG.get("output_root", ".")).resolve()
+DATASET_NAME = DATASET_CFG.get("name", "dataset")
+LABEL_COL = DATASET_CFG.get("label_col", "label")
+
+SPLIT_ROOT = Path(INPUT_CFG.get("split_root") or (OUTPUT_ROOT / "split_process" / DATASET_NAME)).resolve()
+
+TRAINING_ROOT_BASE = Path(OUTPUT_CFG.get("root") or (OUTPUT_ROOT / "training_process")).resolve()
+INCLUDE_DATASET_FOLDER = as_bool(OUTPUT_CFG.get("include_dataset_folder", True), default=True)
+TRAINING_ROOT = TRAINING_ROOT_BASE / DATASET_NAME if INCLUDE_DATASET_FOLDER else TRAINING_ROOT_BASE
+
+TRAINING_ENABLED = as_bool(TRAIN_CFG.get("enabled", True), default=True)
+TRAIN_SCRIPT = Path(TRAIN_CFG["script"]).resolve()
+TRAIN_CONFIG = Path(TRAIN_CFG["config"]).resolve()
+ALGORITHMS = [str(x) for x in TRAIN_CFG.get("algorithms", [TRAIN_CFG.get("algorithm", "LogisticRegression")])]
+SCALERS = [str(x) for x in TRAIN_CFG.get("scalers", [TRAIN_CFG.get("scaler", "none")])]
+FEATURE_PREFIX = TRAIN_CFG.get("feature_prefix", "p_")
+TIMESTAMP_FLAG = "--timestamp" if as_bool(TRAIN_CFG.get("timestamp", False)) else ""
+EXTRA_ARGS = TRAIN_CFG.get("extra_args", "")
+
+REQUIRED_STATUS = str(SELECTION_CFG.get("required_status", "kept"))
+
+
+# ============================================================
+# Selection helpers
+# ============================================================
+
+def normalize_selection(value):
+    """Return None for auto/all, otherwise a set of strings."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.strip().lower() in {"auto", "all", "*", ""}:
+            return None
+        return {value.strip()}
+    return {str(x).strip() for x in value}
+
+
+SCENARIO_FILTER = normalize_selection(SELECTION_CFG.get("scenarios", "auto"))
+STRATEGY_FILTER = normalize_selection(SELECTION_CFG.get("strategies", "auto"))
+REDUCTION_LEVELS_FILTER = normalize_selection(SELECTION_CFG.get("reduction_levels", "auto"))
+
+seed_sel = SELECTION_CFG.get("seeds", "auto")
+if isinstance(seed_sel, str) and seed_sel.strip().lower() in {"auto", "all", "*", ""}:
+    SEED_FILTER = None
+else:
+    SEED_FILTER = {str(int(x)) for x in seed_sel}
+
+
+# ============================================================
+# Output helpers
+# ============================================================
+
+def scaler_name(value):
+    value = str(value).strip().lower()
+    if value in {"", "none", "false", "no", "null"}:
+        return "none"
+    return value.replace("/", "_").replace(" ", "_")
+
+
+def training_run_dir(scenario, strategy, seed, reduction_levels, algorithm):
+    return TRAINING_ROOT / scenario / strategy / f"seed_{seed}" / reduction_levels / algorithm
+
+
+def training_csv_path(scenario, strategy, seed, reduction_levels, algorithm, scaler):
+    s = scaler_name(scaler)
+    return training_run_dir(scenario, strategy, seed, reduction_levels, algorithm) / f"exploration_by_fold_{algorithm}_scaler_{s}.csv"
+
+
+def training_log_path(scenario, strategy, seed, reduction_levels, algorithm, scaler):
+    s = scaler_name(scaler)
+    return training_run_dir(scenario, strategy, seed, reduction_levels, algorithm) / f"status_{algorithm}_scaler_{s}.log"
+
+
+def training_done_path(scenario, strategy, seed, reduction_levels, algorithm, scaler):
+    s = scaler_name(scaler)
+    return training_run_dir(scenario, strategy, seed, reduction_levels, algorithm) / f"training_done_scaler_{s}.txt"
+
+
+def split_dir_for(scenario, strategy, seed, reduction_levels):
+    seed_dir = SPLIT_ROOT / scenario / strategy / f"seed_{seed}"
+    if reduction_levels == "no_threshold":
+        return seed_dir
+    return seed_dir / reduction_levels
+
+
+def split_done_for(scenario, strategy, seed, reduction_levels):
+    return split_dir_for(scenario, strategy, seed, reduction_levels) / "DONE.txt"
+
+
+def split_summary_for(scenario, strategy, seed):
+    return SPLIT_ROOT / scenario / strategy / f"seed_{seed}" / "split_summary.csv"
+
+
+
+# ============================================================
+# Metadata inference
+# ============================================================
+
+def infer_metadata_from_scenario(scenario):
+    overrides = METADATA_CFG.get("scenario_overrides", {}) or {}
+    if scenario in overrides:
+        out = dict(overrides[scenario])
+        return {
+            "representation_strategy": out.get("representation_strategy", scenario),
+            "redundancy_strategy": out.get("redundancy_strategy", "unknown"),
+        }
+
+    if scenario.endswith("_no_reduced"):
+        rep = scenario[: -len("_no_reduced")]
+        return {"representation_strategy": rep, "redundancy_strategy": "no_reduction"}
+
+    token = "_reduced_distance_by_"
+    if token in scenario:
+        rep, red_by = scenario.split(token, 1)
+        return {"representation_strategy": rep, "redundancy_strategy": f"reduced_distance_by_{red_by}"}
+
+    if scenario.endswith("_reduced_distance"):
+        rep = scenario[: -len("_reduced_distance")]
+        return {"representation_strategy": rep, "redundancy_strategy": "reduced_distance"}
+
+    token = "_reduced_descriptor_by_"
+    if token in scenario:
+        rep, red_by = scenario.split(token, 1)
+        return {"representation_strategy": rep, "redundancy_strategy": f"reduced_descriptor_by_{red_by}"}
+
+    if scenario.endswith("_reduced_descriptor"):
+        rep = scenario[: -len("_reduced_descriptor")]
+        return {"representation_strategy": rep, "redundancy_strategy": "reduced_descriptor"}
+
+    if scenario.endswith("_reduced_homology"):
+        rep = scenario[: -len("_reduced_homology")]
+        return {"representation_strategy": rep, "redundancy_strategy": "reduced_homology"}
+
+    return {"representation_strategy": scenario, "redundancy_strategy": "unknown"}
+
+
+# ============================================================
+# Discover valid split runs
+# ============================================================
+
+SPLIT_RUNS = []
+
+if TRAINING_ENABLED:
+    if not SPLIT_ROOT.exists():
+        raise ValueError(f"Split root does not exist: {SPLIT_ROOT}")
+
+    summary_files = sorted(SPLIT_ROOT.glob("*/*/seed_*/split_summary.csv"))
+
+    if not summary_files:
+        raise ValueError(
+            f"No seed-level split_summary.csv files were found under: {SPLIT_ROOT}. "
+            "Run split_dataset first."
+        )
+
+    for summary_file in summary_files:
+        parts = summary_file.relative_to(SPLIT_ROOT).parts
+        scenario = parts[0]
+        strategy = parts[1]
+        seed = parts[2].replace("seed_", "")
+
+        if SCENARIO_FILTER is not None and scenario not in SCENARIO_FILTER:
+            continue
+        if STRATEGY_FILTER is not None and strategy not in STRATEGY_FILTER:
+            continue
+        if SEED_FILTER is not None and seed not in SEED_FILTER:
+            continue
+
+        df = pd.read_csv(summary_file)
+        if "reduction_levels" not in df.columns or "status" not in df.columns:
+            raise ValueError(f"Invalid split_summary.csv schema: {summary_file}. Columns={df.columns.tolist()}")
+
+        meta = infer_metadata_from_scenario(scenario)
+
+        for _, row in df.iterrows():
+            reduction_levels = str(row["reduction_levels"])
+            status = str(row["status"])
+
+            if REDUCTION_LEVELS_FILTER is not None and reduction_levels not in REDUCTION_LEVELS_FILTER:
+                continue
+            if status != REQUIRED_STATUS:
+                continue
+
+            split_dir = split_dir_for(scenario, strategy, seed, reduction_levels)
+            split_done = split_done_for(scenario, strategy, seed, reduction_levels)
+
+            if not split_done.exists():
+                # A kept row without a DONE.txt should not be trained.
+                continue
+
+            for algorithm in ALGORITHMS:
+                for scaler in SCALERS:
+                    SPLIT_RUNS.append({
+                        "scenario": scenario,
+                        "strategy": strategy,
+                        "seed": str(seed),
+                        "reduction_levels": reduction_levels,
+                        "split_summary": str(summary_file),
+                        "split_dir": str(split_dir),
+                        "split_done": str(split_done),
+                        "algorithm": str(algorithm),
+                        "scaler": scaler_name(scaler),
+                        "representation_strategy": meta["representation_strategy"],
+                        "redundancy_strategy": meta["redundancy_strategy"],
+                        "target_done": str(training_done_path(scenario, strategy, seed, reduction_levels, algorithm, scaler)),
+                    })
+
+if not SPLIT_RUNS:
+    raise ValueError(
+        "No valid training targets were generated. Check split_summary.csv status values, "
+        "selection filters, and existing DONE.txt files."
+    )
+
+RUN_INDEX = {
+    (r["scenario"], r["strategy"], r["seed"], r["reduction_levels"], r["algorithm"], r["scaler"]): r
+    for r in SPLIT_RUNS
+}
+
+TRAINING_DONE_TARGETS = [r["target_done"] for r in SPLIT_RUNS]
+TARGETS = list(TRAINING_DONE_TARGETS)
+
+
+# ============================================================
+# Wildcard constraints
+# ============================================================
+
+wildcard_constraints:
+    scenario = r"[^/]+",
+    strategy = r"[^/]+",
+    seed = r"[0-9]+",
+    reduction_levels = r"[^/]+",
+    algorithm = r"[^/]+",
+    scaler = r"[^/]+"
+
+
+# ============================================================
+# Rules
+# ============================================================
+
+rule all:
+    input:
+        TARGETS
+
+
+def run_meta(wc):
+    key = (wc.scenario, wc.strategy, str(wc.seed), wc.reduction_levels, wc.algorithm, wc.scaler)
+    if key not in RUN_INDEX:
+        raise KeyError(f"Unknown training run: {key}")
+    return RUN_INDEX[key]
+
+
+rule run_training:
+    input:
+        split_done=lambda wc: run_meta(wc)["split_done"],
+        split_summary=lambda wc: run_meta(wc)["split_summary"]
+    output:
+        csv=str(TRAINING_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{reduction_levels}" / "{algorithm}" / "exploration_by_fold_{algorithm}_scaler_{scaler}.csv"),
+        log=str(TRAINING_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{reduction_levels}" / "{algorithm}" / "status_{algorithm}_scaler_{scaler}.log"),
+        done=str(TRAINING_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{reduction_levels}" / "{algorithm}" / "training_done_scaler_{scaler}.txt")
+    params:
+        splits_root=lambda wc: run_meta(wc)["split_dir"],
+        outdir=lambda wc: str(TRAINING_ROOT / wc.scenario / wc.strategy / f"seed_{wc.seed}" / wc.reduction_levels / wc.algorithm),
+        script=lambda wc: str(TRAIN_SCRIPT),
+        config_path=lambda wc: str(TRAIN_CONFIG),
+        algorithm=lambda wc: wc.algorithm,
+        scaler=lambda wc: wc.scaler,
+        seed=lambda wc: int(wc.seed),
+        partition_strategy=lambda wc: wc.strategy,
+        representation_strategy=lambda wc: run_meta(wc)["representation_strategy"],
+        redundancy_strategy=lambda wc: run_meta(wc)["redundancy_strategy"],
+        feature_prefix=lambda wc: FEATURE_PREFIX,
+        timestamp_flag=lambda wc: TIMESTAMP_FLAG,
+        extra_args=lambda wc: EXTRA_ARGS
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "{params.outdir}"
+
+        python "{params.script}" \
+          --seed "{params.seed}" \
+          --partition_strategy "{params.partition_strategy}" \
+          --representation_strategy "{params.representation_strategy}" \
+          --redundancy_strategy "{params.redundancy_strategy}" \
+          --splits_root "{params.splits_root}" \
+          --output_dir "{params.outdir}" \
+          --label_col "{LABEL_COL}" \
+          --feature_prefix "{params.feature_prefix}" \
+          --config "{params.config_path}" \
+          --algorithm "{params.algorithm}" \
+          --scaler "{params.scaler}" \
+          {params.timestamp_flag} \
+          {params.extra_args}
+
+        test -f "{output.csv}"
+        test -f "{output.log}"
+
+        cat > "{output.done}" <<EOF
+algorithm={params.algorithm}
+scaler={params.scaler}
+dataset={DATASET_NAME}
+scenario={wildcards.scenario}
+strategy={wildcards.strategy}
+seed={wildcards.seed}
+reduction_levels={wildcards.reduction_levels}
+partition_strategy={params.partition_strategy}
+representation_strategy={params.representation_strategy}
+redundancy_strategy={params.redundancy_strategy}
+splits_root={params.splits_root}
+created_at=$(date -Iseconds)
+EOF
+        """
