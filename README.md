@@ -1,4 +1,4 @@
-# Pipeline for building ML models from protein/peptide sequences
+# A Practical Framework for Reliable Bioinformatics Modeling: A Data-Centric Benchmarking Study in Antioxidant Proteins
 
 This repository provides a **Snakemake-based, data-centric pipeline** for building machine learning experiments from protein or peptide sequences.
 
