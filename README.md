@@ -1,4 +1,4 @@
-# A Practical Framework for Reliable Bioinformatics Modeling: A Data-Centric Benchmarking Study in Antioxidant Proteins
+# Beyond Model Performance: A Data-Centric Assessment of Protein Function Prediction Pipelines
 
 This repository provides a **Snakemake-based, data-centric pipeline** for building machine learning experiments from protein or peptide sequences.
 
