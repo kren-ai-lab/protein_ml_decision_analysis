@@ -2,74 +2,107 @@ global:
   output_root: "../.."
   representation_root: "../../numerical_representation_data"
   reduction_root: "../.."
-  seeds_file: "../../general_configs/random_seeds_30.csv"
+  seeds_file: "../../general_configs/random_seeds_3.csv"
 
 dataset:
-  name: "test"
-  input_data: "../data/test.csv"
+  name: "test2"
+  input_data: "../data/test2.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"
 
+# -----------------------------------------------------------------------------
+# Representations available for materialization and/or splitting.
+# IMPORTANT: the keys below are what the Snakefile uses in train_representations
+# and split_features.split_representation. If your existing keys are different,
+# keep your existing keys and update the references below accordingly.
+# -----------------------------------------------------------------------------
 representations:
-  esm2_t6:
+  prot_t5_xl_uniref50:
+    method: "sylphy_embedding"
+    model_alias: "prot_t5_xl_uniref50"
+    output_name: "prot_t5_xl_uniref50"
+    feature_mode: "embeddings"
+    metric: "cosine"
+    prefix: "prot_t5_xl_uniref50"
+
+  #ankh2_ext1:
+  #  method: "sylphy_embedding"
+  #  model_alias: "ankh2_ext1"
+  #  output_name: "ankh2_ext1"
+  #  feature_mode: "embeddings"
+  #  metric: "cosine"
+  #  prefix: "ankh2"
+
+  esm2_t6_8M_UR50D:
     method: "sylphy_embedding"
     model_alias: "esm2_t6_8M_UR50D"
     output_name: "esm2_t6_8M_UR50D"
     feature_mode: "embeddings"
     metric: "cosine"
-    prefix: "esm2_t6"
+    prefix: "esm2_t6_8M_UR50D"
 
-  # onehot:
-  #  method: "sylphy_one_hot"
-  #  model_alias: "one_hot"
-  #  output_name: "one_hot"
-  #  feature_mode: "descriptors"
-  #  metric: "euclidean"
-  #  prefix: "one_hot"
-  #  feature_prefix: "p_"
+  mistral_Prot_v1_134M:
+    method: "sylphy_embedding"
+    model_alias: "mistral_Prot_v1_134M"
+    output_name: "mistral_Prot_v1_134M"
+    feature_mode: "embeddings"
+    metric: "cosine"
+    prefix: "mistral_Prot_v1_134M"
 
+# -----------------------------------------------------------------------------
+# Split sources.
+# For Experiment 3, option 2, the reduced dataset is fixed to Mistral-Prot.
+# This means all training representations are evaluated on sequences retained
+# after Mistral-Prot distance-based redundancy reduction.
+# -----------------------------------------------------------------------------
 split_sources:
   no_reduced:
-    enabled: true
+    enabled: false
 
   reduced_distance:
     enabled: true
     reductions:
-      esm2_t6:
+      esm2_t6_8M_UR50D:
         enabled: true
-        representation_key: "esm2_t6"
-        root: "../../reduced_distance/test/esm2_t6_embedding_distance_reduction"
+        representation_key: "esm2_t6_8M_UR50D"
+        root: "../../reduced_distance/test2/esm2_t6_embedding_distance_reduction"
         thresholds: "auto"
 
   reduced_homology:
-    enabled: true
+    enabled: false
     reductions:
       homology_mmseqs2_reduction:
-        enabled: true
-        root: "../../reduced_homology/test/homology_mmseqs2_reduction"
+        enabled: false
+        root: "../../reduced_homology/test2/homology_mmseqs2_reduction"
         thresholds: "auto"
 
   reduced_descriptor:
     enabled: false
     reductions:
       onehot_descriptor:
-        enabled: true
+        enabled: false
         representation_key: "onehot"
-        root: "../../reduced_descriptor/test/onehot_descriptor_reduction"
+        root: "../../reduced_descriptor/test2/onehot_descriptor_reduction"
         thresholds: "auto"
 
+# -----------------------------------------------------------------------------
+# Split strategies.
+# For the experiment where the split space is explicitly Mistral-Prot, keep
+# distance_aware_kfold enabled. Random/stratified splits do not use an embedding
+# space, so they are disabled here to keep the experiment clean.
+# -----------------------------------------------------------------------------
 split_strategies:
   biosieve_exec: "biosieve"
 
   random_kfold:
-    enabled: true
+    enabled: false
     n_splits: 5
     shuffle: true
     val_size: 0.1
 
   stratified_kfold:
-    enabled: true
+    enabled: false
     n_splits: 5
     shuffle: true
     val_size: 0.1
@@ -82,25 +115,42 @@ split_strategies:
     val_size: 0.1
     shuffle_ties: true
 
-    # Only used when train_representation has feature_mode: descriptors.
+    # Only used when split_representation has feature_mode: descriptors.
     # It creates distance_aware_kfold_no_norm and distance_aware_kfold_norm.
     descriptor_modes:
       - no_norm
-      - norm
+   #   - norm
 
+# -----------------------------------------------------------------------------
+# NEW BLOCK for the updated Snakefile.
+# This fixes the representation used to define distance-aware splits.
+# Here: Mistral-Prot is used for split distances in every condition.
+# -----------------------------------------------------------------------------
+split_features:
+  enabled: true
+  split_representation: "mistral_Prot_v1_134M"
+  include_split_in_scenario_name: true
+
+# -----------------------------------------------------------------------------
+# Training/materialization representations.
+# Each train representation will be crossed with the fixed Mistral-Prot reduced
+# source and fixed Mistral-Prot split space.
+# -----------------------------------------------------------------------------
 cross_features:
   enabled: true
   train_representations:
-    - "esm2_t6"
-    # - "onehot"
+    - "prot_t5_xl_uniref50"
+    #- "ankh2_ext1"
+    #- "esm2_t6_8M_UR50D"
+    #- "mistral_Prot_v1_134M"
 
 output:
   root: "../../split_process"
   include_dataset_folder: true
 
   # Internal materialized datasets used before splitting.
-  # You can delete this folder and regenerate it.
-  materialized_root: "../../split_process_inputs/test"
+  # This folder can be removed and regenerated.
+  materialized_root: "../../split_process_inputs/test2"
 
 validation:
   enabled: true
@@ -117,20 +167,17 @@ validation:
     - "val.csv"
     - "test.csv"
 
-  # Remove stale fold_* folders before each split attempt. This prevents old
-  # train/val/test files from making an invalid or skipped split look valid.
+  # Remove stale fold_* folders before each split attempt.
   remove_stale_outputs_before_split: true
 
   # If false, invalid fold_* folders are not kept.
   keep_invalid_fold_files: false
 
   # If true, invalid threshold/percentile folders are removed entirely.
-  # The invalid run remains traceable only through the seed-level split_summary.csv.
-  # This prevents downstream scripts from accidentally using invalid train/val/test files.
   remove_invalid_run_dirs: true
 
 analysis:
-  enabled: true
+  enabled: false
   script: "../../notebooks_and_scripts/scripts_for_pipelines/split_summary.py"
 
   # If null, output goes to:
@@ -139,7 +186,7 @@ analysis:
   summary_dirname: "split_analysis"
 
   plots:
-    enabled: true
+    enabled: false
     fig_format: "png"
     dpi: 300
     cmap: "split_feasibility"
@@ -147,6 +194,7 @@ analysis:
     include_no_threshold: true
 
 cleanup:
-  # Remove the temporary split_process_inputs/<dataset> folder after all splits
-  # and split_analysis tables/figures have been generated.
-  remove_materialized_inputs: true
+  # Set to false while debugging, because distance-aware split params point to
+  # temporary split-space arrays inside split_process_inputs/<dataset>.
+  # You can turn this back to true once the full run is stable.
+  remove_materialized_inputs: false

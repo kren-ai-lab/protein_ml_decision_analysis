@@ -2,8 +2,8 @@ global:
   embedding_root: "../../numerical_representation_data"
 
 dataset:
-  name: "test"
-  input_data: "../data/test.csv"
+  name: "antioxidant_proteins_full_consensus"
+  input_data: "../data/sequences_full_consensus.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"

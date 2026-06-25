@@ -35,6 +35,7 @@ REPS_CFG = config.get("representations", {})
 SOURCES_CFG = config.get("split_sources", {})
 STRATEGIES_CFG = config.get("split_strategies", {})
 CROSS_CFG = config.get("cross_features", {})
+SPLIT_FEATURES_CFG = config.get("split_features", {})
 OUTPUT_CFG = config.get("output", {})
 VALIDATION_CFG = config.get("validation", {})
 ANALYSIS_CFG = config.get("analysis", {})
@@ -80,6 +81,29 @@ MATERIALIZED_ROOT = Path(OUTPUT_CFG.get(
 
 BIOSIEVE_EXEC = STRATEGIES_CFG.get("biosieve_exec", "biosieve")
 TRAIN_REPS = CROSS_CFG.get("train_representations", list(REPS_CFG.keys()))
+
+# Optional role separation for representation-role experiments.
+# Backward-compatible default: the distance-aware split space is the
+# same representation used to materialize/train the model.
+#
+# Example config for Experiment 3, option 2:
+#
+# split_features:
+#   enabled: true
+#   split_representation: "mistral_prot"
+#   include_split_in_scenario_name: true
+#
+# Supported split_representation values:
+#   - "same_as_train"      : use the train representation (default)
+#   - "same_as_reduction"  : use the reduction representation when available
+#   - any representation key defined in the `representations` block
+#   - a mapping with train-representation keys and optional "default"
+SPLIT_FEATURES_ENABLED = as_bool(SPLIT_FEATURES_CFG.get("enabled", False), default=False)
+SPLIT_REPRESENTATION_SPEC = SPLIT_FEATURES_CFG.get("split_representation", "same_as_train")
+INCLUDE_SPLIT_IN_SCENARIO_NAME = as_bool(
+    SPLIT_FEATURES_CFG.get("include_split_in_scenario_name", SPLIT_FEATURES_ENABLED),
+    default=SPLIT_FEATURES_ENABLED,
+)
 
 # ============================================================
 # Wildcard constraints
@@ -196,34 +220,113 @@ def source_label(source_kind):
     return source_kind
 
 
-def scenario_name(train_rep, source_kind, reduction_rep_key=None):
+def resolve_split_representation(train_rep, source_kind, reduction_rep_key=None):
+    """Return the representation used to define distance-aware splits.
+
+    By default, the split representation is the training representation, which
+    preserves the original pipeline behavior. When `split_features.enabled` is
+    true, the config can fix a separate split representation, e.g. Mistral-Prot,
+    while the materialized train/val/test files still contain train_rep features.
+    """
+    if not SPLIT_FEATURES_ENABLED:
+        return train_rep
+
+    spec = SPLIT_REPRESENTATION_SPEC
+    if isinstance(spec, dict):
+        spec = spec.get(train_rep, spec.get("default", "same_as_train"))
+
+    if spec in [None, "", "auto", "same_as_train", "train", "training"]:
+        return train_rep
+
+    if spec in ["same_as_reduction", "reduction", "reduction_representation"]:
+        return reduction_rep_key or train_rep
+
+    return str(spec)
+
+
+def scenario_name(train_rep, source_kind, reduction_rep_key=None, split_rep=None):
     train_name = rep_output_name(train_rep)
 
     if source_kind == "no_reduced":
-        return f"{train_name}_no_reduced"
+        base = f"{train_name}_no_reduced"
 
-    if source_kind == "reduced_distance":
+    elif source_kind == "reduced_distance":
         red_name = rep_output_name(reduction_rep_key)
         if train_name == red_name:
-            return f"{train_name}_reduced_distance"
-        return f"{train_name}_reduced_distance_by_{red_name}"
+            base = f"{train_name}_reduced_distance"
+        else:
+            base = f"{train_name}_reduced_distance_by_{red_name}"
 
-    if source_kind == "reduced_descriptor":
+    elif source_kind == "reduced_descriptor":
         red_name = rep_output_name(reduction_rep_key)
         if train_name == red_name:
-            return f"{train_name}_reduced_descriptor"
-        return f"{train_name}_reduced_descriptor_by_{red_name}"
+            base = f"{train_name}_reduced_descriptor"
+        else:
+            base = f"{train_name}_reduced_descriptor_by_{red_name}"
 
-    if source_kind == "reduced_homology":
-        return f"{train_name}_reduced_homology"
+    elif source_kind == "reduced_homology":
+        base = f"{train_name}_reduced_homology"
 
-    raise ValueError(f"Unknown source kind: {source_kind}")
+    else:
+        raise ValueError(f"Unknown source kind: {source_kind}")
+
+    if SPLIT_FEATURES_ENABLED and INCLUDE_SPLIT_IN_SCENARIO_NAME:
+        split_name = rep_output_name(split_rep or train_rep)
+        base = f"{base}_split_by_{split_name}"
+
+    return base
 
 
 def materialized_full_data_path(scenario, threshold=""):
+    """Materialized dataset used as Biosieve input and downstream training input."""
     if threshold:
         return str(MATERIALIZED_ROOT / scenario / threshold / "full_data.csv")
     return str(MATERIALIZED_ROOT / scenario / "full_data.csv")
+
+
+def materialized_split_full_data_path(scenario, threshold=""):
+    """Materialized dataset used only to build distance arrays for distance-aware splits."""
+    if not SPLIT_FEATURES_ENABLED:
+        return materialized_full_data_path(scenario, threshold)
+    if threshold:
+        return str(MATERIALIZED_ROOT / scenario / threshold / "_split_space" / "full_data.csv")
+    return str(MATERIALIZED_ROOT / scenario / "_split_space" / "full_data.csv")
+
+
+def materialized_split_metadata_path(scenario, threshold=""):
+    if not SPLIT_FEATURES_ENABLED:
+        if threshold:
+            return str(MATERIALIZED_ROOT / scenario / threshold / "metadata.json")
+        return str(MATERIALIZED_ROOT / scenario / "metadata.json")
+    if threshold:
+        return str(MATERIALIZED_ROOT / scenario / threshold / "_split_space" / "metadata.json")
+    return str(MATERIALIZED_ROOT / scenario / "_split_space" / "metadata.json")
+
+
+TRAIN_FULL_DATA_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv")
+TRAIN_FULL_DATA_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv")
+TRAIN_METADATA_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "metadata.json")
+TRAIN_METADATA_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "metadata.json")
+
+if SPLIT_FEATURES_ENABLED:
+    SPLIT_FULL_DATA_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "_split_space" / "full_data.csv")
+    SPLIT_FULL_DATA_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_split_space" / "full_data.csv")
+    SPLIT_METADATA_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "_split_space" / "metadata.json")
+    SPLIT_METADATA_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_split_space" / "metadata.json")
+    DIST_ARRAYS_DIR_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "_split_space" / "_distance_arrays")
+    DIST_ARRAYS_DIR_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_split_space" / "_distance_arrays")
+else:
+    SPLIT_FULL_DATA_NO_THRESHOLD = TRAIN_FULL_DATA_NO_THRESHOLD
+    SPLIT_FULL_DATA_WITH_THRESHOLD = TRAIN_FULL_DATA_WITH_THRESHOLD
+    SPLIT_METADATA_NO_THRESHOLD = TRAIN_METADATA_NO_THRESHOLD
+    SPLIT_METADATA_WITH_THRESHOLD = TRAIN_METADATA_WITH_THRESHOLD
+    DIST_ARRAYS_DIR_NO_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays")
+    DIST_ARRAYS_DIR_WITH_THRESHOLD = str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays")
+
+DIST_EMB_NO_THRESHOLD = str(Path(DIST_ARRAYS_DIR_NO_THRESHOLD) / "embeddings.npy")
+DIST_IDS_NO_THRESHOLD = str(Path(DIST_ARRAYS_DIR_NO_THRESHOLD) / "embedding_ids.csv")
+DIST_EMB_WITH_THRESHOLD = str(Path(DIST_ARRAYS_DIR_WITH_THRESHOLD) / "embeddings.npy")
+DIST_IDS_WITH_THRESHOLD = str(Path(DIST_ARRAYS_DIR_WITH_THRESHOLD) / "embedding_ids.csv")
 
 
 def split_done_path(scenario, strategy_dir, seed, threshold=""):
@@ -256,6 +359,10 @@ def split_output_dir(scenario, strategy_dir, seed, threshold=""):
 
 
 def arrays_dir_for(scenario, threshold=""):
+    if SPLIT_FEATURES_ENABLED:
+        if threshold:
+            return str(MATERIALIZED_ROOT / scenario / threshold / "_split_space" / "_distance_arrays")
+        return str(MATERIALIZED_ROOT / scenario / "_split_space" / "_distance_arrays")
     if threshold:
         return str(MATERIALIZED_ROOT / scenario / threshold / "_distance_arrays")
     return str(MATERIALIZED_ROOT / scenario / "_distance_arrays")
@@ -283,8 +390,9 @@ def descriptor_standardize(strategy_dir):
     return strategy_dir.endswith("_norm")
 
 
-def active_strategy_dirs_for_rep(train_rep):
+def active_strategy_dirs_for_rep(train_rep, split_rep=None):
     strategy_dirs = []
+    distance_rep = split_rep or train_rep
 
     random_cfg = STRATEGIES_CFG.get("random_kfold", {})
     if enabled(random_cfg):
@@ -296,7 +404,7 @@ def active_strategy_dirs_for_rep(train_rep):
 
     dist_cfg = STRATEGIES_CFG.get("distance_aware_kfold", {})
     if enabled(dist_cfg):
-        if rep_feature_mode(train_rep) == "descriptors":
+        if rep_feature_mode(distance_rep) == "descriptors":
             modes = dist_cfg.get("descriptor_modes", ["no_norm"])
             for mode in modes:
                 if mode == "norm":
@@ -337,7 +445,16 @@ def add_scenario(
     threshold="",
     reduction_rep_key=None,
 ):
-    scenario = scenario_name(train_rep, source_kind, reduction_rep_key)
+    split_rep = resolve_split_representation(
+        train_rep=train_rep,
+        source_kind=source_kind,
+        reduction_rep_key=reduction_rep_key,
+    )
+    # Validate that both roles point to configured representations.
+    rep_cfg(train_rep)
+    rep_cfg(split_rep)
+
+    scenario = scenario_name(train_rep, source_kind, reduction_rep_key, split_rep=split_rep)
 
     key = (scenario, threshold)
     if key not in SCENARIOS:
@@ -345,13 +462,15 @@ def add_scenario(
             "scenario": scenario,
             "threshold": threshold,
             "train_rep": train_rep,
+            "split_rep": split_rep,
             "source_kind": source_kind,
             "source_file": source_file,
             "reduction_rep_key": reduction_rep_key or "",
             "materialized": materialized_full_data_path(scenario, threshold),
+            "materialized_split": materialized_split_full_data_path(scenario, threshold),
         }
 
-    for strategy_dir in active_strategy_dirs_for_rep(train_rep):
+    for strategy_dir in active_strategy_dirs_for_rep(train_rep, split_rep=split_rep):
         for seed in SEEDS:
             add_split_attempt_target(scenario, strategy_dir, seed, threshold)
 
@@ -563,8 +682,8 @@ rule materialize_no_threshold:
         source=lambda wc: SCENARIOS[(wc.scenario, "")]["source_file"],
         train_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, "")]["train_rep"])
     output:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
-        metadata=str(MATERIALIZED_ROOT / "{scenario}" / "metadata.json")
+        full_data=TRAIN_FULL_DATA_NO_THRESHOLD,
+        metadata=TRAIN_METADATA_NO_THRESHOLD
     run:
         materialize_dataset(
             source_path=input.source,
@@ -580,8 +699,8 @@ rule materialize_with_threshold:
         source=lambda wc: SCENARIOS[(wc.scenario, wc.threshold)]["source_file"],
         train_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, wc.threshold)]["train_rep"])
     output:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
-        metadata=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "metadata.json")
+        full_data=TRAIN_FULL_DATA_WITH_THRESHOLD,
+        metadata=TRAIN_METADATA_WITH_THRESHOLD
     run:
         materialize_dataset(
             source_path=input.source,
@@ -590,6 +709,46 @@ rule materialize_with_threshold:
             metadata_path=output.metadata,
             meta=SCENARIOS[(wildcards.scenario, wildcards.threshold)]
         )
+
+
+if SPLIT_FEATURES_ENABLED:
+
+    rule materialize_split_space_no_threshold:
+        input:
+            source=lambda wc: SCENARIOS[(wc.scenario, "")]["source_file"],
+            split_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, "")]["split_rep"])
+        output:
+            full_data=SPLIT_FULL_DATA_NO_THRESHOLD,
+            metadata=SPLIT_METADATA_NO_THRESHOLD
+        run:
+            meta = dict(SCENARIOS[(wildcards.scenario, "")])
+            meta["materialization_role"] = "split_space"
+            materialize_dataset(
+                source_path=input.source,
+                train_full_path=input.split_full,
+                output_path=output.full_data,
+                metadata_path=output.metadata,
+                meta=meta
+            )
+
+
+    rule materialize_split_space_with_threshold:
+        input:
+            source=lambda wc: SCENARIOS[(wc.scenario, wc.threshold)]["source_file"],
+            split_full=lambda wc: rep_full_data(SCENARIOS[(wc.scenario, wc.threshold)]["split_rep"])
+        output:
+            full_data=SPLIT_FULL_DATA_WITH_THRESHOLD,
+            metadata=SPLIT_METADATA_WITH_THRESHOLD
+        run:
+            meta = dict(SCENARIOS[(wildcards.scenario, wildcards.threshold)])
+            meta["materialization_role"] = "split_space"
+            materialize_dataset(
+                source_path=input.source,
+                train_full_path=input.split_full,
+                output_path=output.full_data,
+                metadata_path=output.metadata,
+                meta=meta
+            )
 
 
 def materialize_dataset(source_path, train_full_path, output_path, metadata_path, meta):
@@ -668,6 +827,7 @@ def materialize_dataset(source_path, train_full_path, output_path, metadata_path
     metadata = dict(meta)
     metadata.update({
         "source_path": str(source_path),
+        "representation_full_path": str(train_full_path),
         "train_full_path": str(train_full_path),
         "output_path": str(output_path),
         "n_rows": int(out.shape[0]),
@@ -682,37 +842,37 @@ def materialize_dataset(source_path, train_full_path, output_path, metadata_path
 
 rule build_distance_arrays_no_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv")
+        full_data=SPLIT_FULL_DATA_NO_THRESHOLD
     output:
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+        emb=DIST_EMB_NO_THRESHOLD,
+        ids=DIST_IDS_NO_THRESHOLD
     run:
-        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, "")]["train_rep"])
+        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, "")]["split_rep"])
 
 
 rule build_distance_arrays_with_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv")
+        full_data=SPLIT_FULL_DATA_WITH_THRESHOLD
     output:
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+        emb=DIST_EMB_WITH_THRESHOLD,
+        ids=DIST_IDS_WITH_THRESHOLD
     run:
-        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, wildcards.threshold)]["train_rep"])
+        build_distance_arrays(input.full_data, output.emb, output.ids, SCENARIOS[(wildcards.scenario, wildcards.threshold)]["split_rep"])
 
 
-def build_distance_arrays(full_data_path, emb_path, ids_path, train_rep):
+def build_distance_arrays(full_data_path, emb_path, ids_path, rep_key):
     import numpy as np
 
     df = pd.read_csv(full_data_path)
 
-    rep = rep_cfg(train_rep)
-    feature_mode = rep_feature_mode(train_rep)
+    rep_cfg(rep_key)
+    feature_mode = rep_feature_mode(rep_key)
 
     if ID_COL not in df.columns:
         raise ValueError(f"ID column '{ID_COL}' not found in {full_data_path}")
 
     if feature_mode == "descriptors":
-        prefix = rep_feature_prefix(train_rep)
+        prefix = rep_feature_prefix(rep_key)
         feature_cols = [c for c in df.columns if str(c).startswith(prefix)]
     else:
         non_feature_cols = {SEQUENCE_COL, ID_COL, LABEL_COL}
@@ -720,11 +880,10 @@ def build_distance_arrays(full_data_path, emb_path, ids_path, train_rep):
 
     if not feature_cols:
         raise ValueError(
-            f"No feature columns found for train_rep={train_rep} in {full_data_path}"
+            f"No feature columns found for split_rep={rep_key} in {full_data_path}"
         )
 
     Path(emb_path).parent.mkdir(parents=True, exist_ok=True)
-    df[feature_cols].to_numpy(dtype="float32")
     np.save(emb_path, df[feature_cols].to_numpy(dtype="float32"))
     df[[ID_COL]].to_csv(ids_path, index=False)
 
@@ -735,7 +894,7 @@ def build_distance_arrays(full_data_path, emb_path, ids_path, train_rep):
 
 rule write_basic_params_no_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv")
+        full_data=TRAIN_FULL_DATA_NO_THRESHOLD
     output:
         yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
     wildcard_constraints:
@@ -752,7 +911,7 @@ rule write_basic_params_no_threshold:
 
 rule write_basic_params_with_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv")
+        full_data=TRAIN_FULL_DATA_WITH_THRESHOLD
     output:
         yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
     wildcard_constraints:
@@ -769,9 +928,9 @@ rule write_basic_params_with_threshold:
 
 rule write_distance_params_no_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+        full_data=TRAIN_FULL_DATA_NO_THRESHOLD,
+        emb=DIST_EMB_NO_THRESHOLD,
+        ids=DIST_IDS_NO_THRESHOLD
     output:
         yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
     wildcard_constraints:
@@ -790,9 +949,9 @@ rule write_distance_params_no_threshold:
 
 rule write_distance_params_with_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+        full_data=TRAIN_FULL_DATA_WITH_THRESHOLD,
+        emb=DIST_EMB_WITH_THRESHOLD,
+        ids=DIST_IDS_WITH_THRESHOLD
     output:
         yaml_file=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
     wildcard_constraints:
@@ -815,6 +974,7 @@ def write_params_yaml(output_yaml, strategy_dir, seed, scenario, threshold="", e
     actual_strategy = biosieve_strategy(strategy_dir)
     meta = SCENARIOS[(scenario, threshold)]
     train_rep = meta["train_rep"]
+    split_rep = meta.get("split_rep", train_rep)
 
     if actual_strategy == "random_kfold":
         cfg = {
@@ -842,12 +1002,12 @@ def write_params_yaml(output_yaml, strategy_dir, seed, scenario, threshold="", e
 
     elif actual_strategy == "distance_aware_kfold":
         dt = STRATEGIES_CFG["distance_aware_kfold"]
-        feature_mode = rep_feature_mode(train_rep)
+        feature_mode = rep_feature_mode(split_rep)
 
         cfg = {
             actual_strategy: {
                 "feature_mode": feature_mode,
-                "metric": rep_metric(train_rep),
+                "metric": rep_metric(split_rep),
                 "n_splits": int(dt.get("n_splits", 5)),
                 "seed": int(seed),
                 "shuffle_ties": as_bool(dt.get("shuffle_ties", True), default=True),
@@ -859,7 +1019,7 @@ def write_params_yaml(output_yaml, strategy_dir, seed, scenario, threshold="", e
 
         if feature_mode == "descriptors":
             # Biosieve DistanceAwareKFoldSplitter expects descriptor_prefix, not feature_prefix.
-            cfg[actual_strategy]["descriptor_prefix"] = rep_feature_prefix(train_rep)
+            cfg[actual_strategy]["descriptor_prefix"] = rep_feature_prefix(split_rep)
             cfg[actual_strategy]["standardize_descriptors"] = as_bool(descriptor_standardize(strategy_dir))
 
     else:
@@ -980,6 +1140,9 @@ def write_split_status(status_path, scenario, strategy_dir, seed, threshold, sta
         "biosieve_strategy": biosieve_strategy(strategy_dir),
         "seed": int(seed),
         "threshold": threshold,
+        "train_rep": SCENARIOS.get((scenario, threshold), {}).get("train_rep", ""),
+        "split_rep": SCENARIOS.get((scenario, threshold), {}).get("split_rep", ""),
+        "reduction_rep_key": SCENARIOS.get((scenario, threshold), {}).get("reduction_rep_key", ""),
         "percentile": threshold_to_parameter(threshold) if str(threshold).startswith("p") else "",
         "parameter_value": threshold_to_parameter(threshold),
         "reduction_levels": threshold if threshold else "no_threshold",
@@ -1267,7 +1430,7 @@ def run_biosieve_split_safely(full_data, params_yaml, outdir, strategy_dir, seed
 
 rule create_basic_splits_no_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        full_data=TRAIN_FULL_DATA_NO_THRESHOLD,
         params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml")
     output:
         status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "no_threshold.csv"))
@@ -1292,7 +1455,7 @@ rule create_basic_splits_no_threshold:
 
 rule create_basic_splits_with_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        full_data=TRAIN_FULL_DATA_WITH_THRESHOLD,
         params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml")
     output:
         status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "{threshold}.csv"))
@@ -1317,10 +1480,10 @@ rule create_basic_splits_with_threshold:
 
 rule create_distance_splits_no_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "full_data.csv"),
+        full_data=TRAIN_FULL_DATA_NO_THRESHOLD,
         params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "params_split.yaml"),
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "_distance_arrays" / "embedding_ids.csv")
+        emb=DIST_EMB_NO_THRESHOLD,
+        ids=DIST_IDS_NO_THRESHOLD
     output:
         status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "no_threshold.csv"))
     wildcard_constraints:
@@ -1346,10 +1509,10 @@ rule create_distance_splits_no_threshold:
 
 rule create_distance_splits_with_threshold:
     input:
-        full_data=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "full_data.csv"),
+        full_data=TRAIN_FULL_DATA_WITH_THRESHOLD,
         params_yaml=str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / "{threshold}" / "params_split.yaml"),
-        emb=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embeddings.npy"),
-        ids=str(MATERIALIZED_ROOT / "{scenario}" / "{threshold}" / "_distance_arrays" / "embedding_ids.csv")
+        emb=DIST_EMB_WITH_THRESHOLD,
+        ids=DIST_IDS_WITH_THRESHOLD
     output:
         status_row=temp(str(SPLIT_ROOT / "{scenario}" / "{strategy}" / "seed_{seed}" / ".split_status_rows" / "{threshold}.csv"))
     wildcard_constraints:
