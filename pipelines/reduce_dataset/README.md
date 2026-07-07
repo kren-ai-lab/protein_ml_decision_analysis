@@ -23,17 +23,17 @@ The `reduce_dataset` workflow creates non-redundant or less redundant datasets u
 
 It currently supports three reduction families:
 
-| Reduction type | What it uses | Main output |
-|---|---|---|
-| Embedding-distance reduction | Similarity percentiles from representation analysis | `reduced_distance/<dataset>/...` |
-| Homology reduction | Sequence similarity using MMseqs2/Biosieve | `reduced_homology/<dataset>/...` |
-| One-hot descriptor reduction | Descriptor-space distances from one-hot features | `reduced_descriptor/<dataset>/...` |
+| Reduction type               | What it uses                                                               | Main output                        |
+| ---------------------------- | -------------------------------------------------------------------------- | ---------------------------------- |
+| Embedding-distance reduction | Similarity percentiles and embedding matrices from representation analysis | `reduced_distance/<dataset>/...`   |
+| Homology reduction           | Sequence similarity using MMseqs2 through BioSieve                         | `reduced_homology/<dataset>/...`   |
+| One-hot descriptor reduction | Descriptor-space distances from one-hot-style features                     | `reduced_descriptor/<dataset>/...` |
 
 The workflow can also run a reduction analysis step to summarize:
 
-- how many sequences are retained or removed;
-- how reduction affects each label;
-- which reduction levels are available for later splitting.
+* how many sequences are retained or removed;
+* how reduction affects each label;
+* which reduction levels are available for later splitting.
 
 ---
 
@@ -56,7 +56,7 @@ Run all commands from inside this folder unless stated otherwise.
 
 This workflow assumes that the `numerical_representations` workflow has already been executed.
 
-For each representation used in reduction, the following files should exist:
+For each representation selected in `config.yaml`, the workflow expects the representation folder to follow this structure:
 
 ```text
 numerical_representation_data/
@@ -71,9 +71,19 @@ numerical_representation_data/
                     └── <prefix>_similarity_percentiles.csv
 ```
 
-For homology reduction, the workflow mainly needs sequence information from `full_data.csv`.
+The exact required files depend on the reduction strategy:
 
-For embedding-distance or one-hot descriptor reduction, the analysis files are required because reduction thresholds are derived from the representation-space analysis.
+| Strategy             | Required files                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `embedding_distance` | `full_data.csv`, `training_embeddings.npy`, and `<prefix>_similarity_percentiles.csv` |
+| `homology`           | `full_data.csv`                                                                       |
+| `onehot_descriptor`  | `full_data.csv` and `<prefix>_similarity_percentiles.csv`                             |
+
+For homology reduction, the workflow uses sequence information from `full_data.csv`. The selected `representation_key` is used only to locate the dataset-specific representation folder.
+
+For embedding-distance reduction, thresholds are derived from the representation-space analysis, so both the embedding matrix and similarity percentile table are required.
+
+For one-hot descriptor reduction, the one-hot representation and its percentile table must exist before enabling the strategy.
 
 ---
 
@@ -101,6 +111,8 @@ python -m snakemake -n -p
 
 ## 5. Main configuration blocks
 
+The workflow is controlled by `config/config.yaml`.
+
 ### 5.1 `global`
 
 ```yaml
@@ -109,8 +121,8 @@ global:
   embedding_root: "../../numerical_representation_data"
 ```
 
-- `output_root`: Root folder where reduction outputs are written 
-- `embedding_root`: Location of outputs from `numerical_representations` 
+* `output_root`: Root folder where reduction outputs are written.
+* `embedding_root`: Location of outputs from the `numerical_representations` workflow.
 
 ---
 
@@ -125,11 +137,11 @@ dataset:
   label_col: "label"
 ```
 
-- `name`: Dataset name used in output paths 
-- `input_data`: Original input dataset 
-- `sequence_col`: Column containing protein or peptide sequences 
-- `id_col`:  Unique sequence identifier 
-- `label_col`:  Target label column 
+* `name`: Dataset name used in input and output paths.
+* `input_data`: Original input dataset.
+* `sequence_col`: Column containing protein or peptide sequences.
+* `id_col`: Unique sequence identifier.
+* `label_col`: Target label column.
 
 Changing `dataset.name` changes output paths such as:
 
@@ -163,10 +175,12 @@ Paths are inferred automatically as:
 <embedding_root>/<dataset.name>/<method>/<model_alias>/analysis/tables/<prefix>_similarity_percentiles.csv
 <embedding_root>/<dataset.name>/<method>/<model_alias>/analysis/artifacts/training_embeddings.npy
 ```
-- `label`: Human-readable name used in plots and reports 
-- `method`: Representation method, e.g. `sylphy_embedding` or `sylphy_one_hot` 
-- `model_alias`: Folder name created by the representation workflow 
-- `prefix`: Prefix used in analysis output files 
+
+* `label`: Human-readable name used in plots and reports.
+* `method`: Representation method, e.g. `sylphy_embedding` or `sylphy_one_hot`.
+* `model`: Model identifier or representation name used to generate the features.
+* `model_alias`: Folder name created by the representation workflow.
+* `prefix`: Prefix used in analysis output files.
 
 > Important: `model_alias` and `prefix` must match the folders and files generated by the `numerical_representations` workflow.
 
@@ -240,7 +254,7 @@ reductions:
     output_dir: null
 ```
 
-This strategy reduces the dataset using sequence similarity with MMseqs2 through Biosieve.
+This strategy reduces the dataset using sequence similarity with MMseqs2 through BioSieve.
 
 Although `representation_key` is required, homology reduction uses the sequence column rather than embedding distances. The representation is used as a convenient source of `full_data.csv`.
 
@@ -281,9 +295,16 @@ reductions:
     output_dir: null
 ```
 
-This strategy reduces the dataset using Euclidean distances between one-hot descriptor vectors.
+This strategy reduces the dataset using Euclidean distances between one-hot or descriptor-style feature vectors.
 
-It requires a one-hot representation and its analysis outputs to exist.
+> Note: this strategy is optional and is disabled by default in the example `config.yaml`. To use it, uncomment both the `onehot` entry under `representations` and the `onehot_descriptor` block under `reductions`.
+
+It requires:
+
+```text
+full_data.csv
+analysis/tables/<prefix>_similarity_percentiles.csv
+```
 
 Typical output:
 
@@ -341,8 +362,11 @@ reduction_analysis/
 
 These files are useful to inspect whether a reduction level retains enough samples and whether it affects labels unevenly.
 
+---
 
 ## 8. Common use cases
+
+The examples below show only the `enabled` flags that need to be changed. Keep the remaining configuration fields unchanged unless the input paths, representations, or scripts differ.
 
 ### Run only embedding-distance reduction
 
@@ -390,4 +414,14 @@ reductions:
     enabled: true
 ```
 
-Make sure the required representations and analysis outputs exist before enabling each reduction.
+Before enabling `onehot_descriptor`, make sure that the `onehot` representation is also defined under `representations` and that its required files already exist.
+
+---
+
+## 9. Notes
+
+* Use `snakemake -n -p` before running the workflow to check which jobs will be executed.
+* Keep `model_alias` and `prefix` consistent with the output names generated by the `numerical_representations` workflow.
+* Use `output_dir: null` unless you need to override the default output location.
+* Make sure the required representation and analysis files exist before enabling each reduction strategy.
+

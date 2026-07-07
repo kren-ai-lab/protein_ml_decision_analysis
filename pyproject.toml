@@ -58,9 +58,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science"
-Repository = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science"
-Issues = "https://github.com/kren-ai-lab/building_ml_models_for_protein_science/issues"
+Homepage = "https://github.com/kren-ai-lab/protein_ml_decision_analysis"
+Repository = "https://github.com/kren-ai-lab/protein_ml_decision_analysis"
+Issues = "https://github.com/kren-ai-lab/protein_ml_decision_analysis"
 
 [tool.hatch.metadata]
 allow-direct-references = true

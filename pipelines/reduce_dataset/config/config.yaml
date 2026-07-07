@@ -1,20 +1,25 @@
+# Snakemake configuration for the reduction workflow.
+# Edit dataset paths, available representations, and enabled reductions as needed.
+
 global:
+  # Base output directory and location of precomputed representations.
   output_root: "../.."
   embedding_root: "../../numerical_representation_data"
 
+
 dataset:
+  # Input dataset and column names expected by the workflow.
   name: "test"
   input_data: "../data/test.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"
 
-# Compact representation registry.
-# Paths are inferred as:
-#   <embedding_root>/<dataset.name>/<method>/<model_alias>/full_data.csv
-#   <embedding_root>/<dataset.name>/<method>/<model_alias>/analysis/tables/<prefix>_similarity_percentiles.csv
-#   <embedding_root>/<dataset.name>/<method>/<model_alias>/analysis/artifacts/training_embeddings.npy
+
 representations:
+  # Representation entries used by reduction analyses.
+  # Expected path:
+  # <embedding_root>/<dataset.name>/<method>/<model_alias>/
   esm2_t6:
     label: "ESM2-8M"
     method: "sylphy_embedding"
@@ -22,7 +27,7 @@ representations:
     model_alias: "esm2_t6_8M_UR50D"
     prefix: "esm2_t6_8M_UR50D"
 
-  # Uncomment only when these representation + analysis folders already exist.
+  # Uncomment only if these representation files already exist.
   # prot_t5:
   #   label: "ProtT5-XL"
   #   method: "sylphy_embedding"
@@ -31,17 +36,19 @@ representations:
   #   prefix: "prot_t5"
 
   # onehot:
-  #  label: "One-hot"
-  #  method: "sylphy_one_hot"
-  #  model: "one_hot"
-  #  model_alias: "one_hot"
-  #  prefix: "one_hot"
-  #  feature_prefix: "p_"
-  #  analysis:
-  #    embedding_npy: null
+  #   label: "One-hot"
+  #   method: "sylphy_one_hot"
+  #   model: "one_hot"
+  #   model_alias: "one_hot"
+  #   prefix: "one_hot"
+  #   feature_prefix: "p_"
+  #   analysis:
+  #     embedding_npy: null
+
 
 reductions:
   embedding_distance:
+    # Representation-aware reduction from percentile-based distance thresholds.
     enabled: true
     representation_keys:
       - "esm2_t6"
@@ -54,6 +61,7 @@ reductions:
     output_dir: null
 
   homology:
+    # Sequence-level redundancy reduction with MMseqs2 through BioSieve.
     enabled: true
     label: "Homology MMseqs2"
     representation_key: "esm2_t6"
@@ -67,28 +75,25 @@ reductions:
     output_dir: null
 
   # onehot_descriptor:
-  #  enabled: true
-  #  label: "One-hot descriptor"
-  #  representation_key: "onehot"
-  #  experiment_name: "onehot_descriptor_reduction"
+  #   # Optional descriptor-based reduction for one-hot-style features.
+  #   enabled: true
+  #   label: "One-hot descriptor"
+  #   representation_key: "onehot"
+  #   experiment_name: "onehot_descriptor_reduction"
 
-  #  script: "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
-  #  biosieve_exec: "biosieve"
-  #  strategy: "descriptor_euclidean"
-  #  descriptor_prefix: "p_"
-  #  percentile_col: "percentile"
-  #  threshold_col: "similarity"
-  #  output_dir: null
+  #   script: "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
+  #   biosieve_exec: "biosieve"
+  #   strategy: "descriptor_euclidean"
+  #   descriptor_prefix: "p_"
+  #   percentile_col: "percentile"
+  #   threshold_col: "similarity"
+  #   output_dir: null
+
 
 analysis:
+  # Generate summary tables and figures from reduction outputs.
   enabled: true
-
-  # This script should be stored at:
-  # notebooks_and_scripts/scripts_for_pipelines/summary_reduction.py
   script: "../../notebooks_and_scripts/scripts_for_pipelines/summary_reduction.py"
-
-  # If null, outputs go to:
-  # <output_root>/reduction_analysis/<dataset.name>
   output_dir: null
 
   general: true
