@@ -1,10 +1,14 @@
 # Data-Centric Benchmarking of Protein Function Prediction Pipelines
 
-Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3</sup>, Karen Oróstica<sup>4</sup>, Jorge González-Puelma<sup>5</sup>, Marcelo Navarrete<sup>5,6</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Fabio Herrera-Rocha<sup>3*</sup>, and David Medina-Ortiz<sup>1,3*</sup>.<br>
+Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3</sup>, Karen Oróstica<sup>4</sup>, Jorge González-Puelma<sup>5</sup>, Marcelo Navarrete<sup>5,6</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Fabio Herrera-Rocha<sup>3,*</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
-Data-Centric Benchmarking of Protein Function Prediction Pipelines.<br>
-
-<sup>*1*</sup><sub>Departamento de Ingeniería en Computación, Universidad de Magallanes, Avenida Bulnes 01855, 6210427, Punta Arenas, Chile.</sub><br> <sup>*2*</sup><sub>Departamento de Ciencias Computacionales, Tecnológico Nacional de México/CENIDET, Int. Internado Palmira SN, 62490, Morelos, México.</sub><br> <sup>*3*</sup><sub>Leibniz-Institute of Plant Biochemistry, Department of Bioorganic Chemistry, Weinberg 3, D-06120 Halle, Germany.</sub><br> <sup>*4*</sup><sub>Data Science Institute, Universidad del Desarrollo, Av. Plaza 680, 7610615, Santiago, Chile.</sub><br> <sup>*5*</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br> <sup>*6*</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br> <sup>***</sup><sub>Corresponding authors: Fabio Herrera-Rocha ([FabioEsteban.HerreraRocha@ipb-halle.de](mailto:FabioEsteban.HerreraRocha@ipb-halle.de)) and David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
+<sup>1</sup><sub>Departamento de Ingeniería en Computación, Universidad de Magallanes, Avenida Bulnes 01855, 6210427, Punta Arenas, Chile.</sub><br>
+<sup>2</sup><sub>Departamento de Ciencias Computacionales, Tecnológico Nacional de México/CENIDET, Int. Internado Palmira SN, 62490, Morelos, México.</sub><br>
+<sup>3</sup><sub>Leibniz-Institute of Plant Biochemistry, Department of Bioorganic Chemistry, Weinberg 3, D-06120 Halle, Germany.</sub><br>
+<sup>4</sup><sub>Data Science Institute, Universidad del Desarrollo, Av. Plaza 680, 7610615, Santiago, Chile.</sub><br>
+<sup>5</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br>
+<sup>6</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br>
+<sup>*</sup><sub>Corresponding authors: Fabio Herrera-Rocha ([FabioEsteban.HerreraRocha@ipb-halle.de](mailto:FabioEsteban.HerreraRocha@ipb-halle.de)) and David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
 
 ---
 
@@ -87,7 +91,7 @@ Create or activate a Python environment with the required tools:
 - `pandas`
 - `numpy`
 - `scikit-learn`
-- `biosieve`
+- `BioSieve`
 - `sylphy`
 - any additional dependencies required by the scripts in `notebooks_and_scripts/scripts_for_pipelines/`
 
@@ -244,7 +248,7 @@ reduced_descriptor/<dataset>/
 reduction_analysis/<dataset>/
 ```
 
-Distance-based reductions require numerical representation analysis outputs, such as percentile tables and `training_embeddings.npy`. Homology reduction uses sequence similarity, usually through MMseqs2/Biosieve.
+Distance-based reductions require numerical representation analysis outputs, such as percentile tables and `training_embeddings.npy`. Homology reduction uses sequence similarity, usually through MMseqs2/BioSieve.
 
 More details are available in:
 
@@ -407,7 +411,7 @@ global:
 
 ---
 
-## 10. Advanced: direct training script execution
+## 9. Advanced: direct training script execution
 
 The recommended way to train models is through the `training_process` workflow. However, the training script can also be called directly for debugging or development.
 
@@ -429,4 +433,3 @@ python notebooks_and_scripts/scripts_for_pipelines/training_model_external_cv.py
 ```
 
 Use the workflow when running full experiments, and use the direct command only for troubleshooting or script development.
-
