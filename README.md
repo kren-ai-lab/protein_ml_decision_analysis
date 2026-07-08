@@ -1,4 +1,4 @@
-# Data-Centric Benchmarking of Protein Function Prediction Pipelines
+# Data-Centric Evaluation of Protein Function Prediction Pipelines
 
 Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3</sup>, Karen Oróstica<sup>4</sup>, Jorge González-Puelma<sup>5</sup>, Marcelo Navarrete<sup>5,6</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Fabio Herrera-Rocha<sup>3,*</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
