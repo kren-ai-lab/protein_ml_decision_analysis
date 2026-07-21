@@ -890,19 +890,19 @@ If you use this workflow in your research, please cite the associated publicatio
 ## Software
 
 ```text
-(Se agregará el DOI de Zenodo)
+Pending to add Zenodo DOI
 ```
 
 ## Manuscript
 
 ```text
-(Aquí irá la referencia del paper)
+The arxiv preprint DOI will be added
 ```
 
 ## BibTeX
 
 ```bibtex
-@software{...}
+
 ```
 
 # License
