@@ -6,14 +6,16 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21709987.svg)](https://doi.org/10.5281/zenodo.21709987)
 [![GitHub release](https://img.shields.io/github/v/release/kren-ai-lab/protein_ml_decision_analysis)](https://github.com/kren-ai-lab/protein_ml_decision_analysis/releases/latest)
 
-Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3</sup>, Karen Oróstica<sup>4</sup>, Jorge González-Puelma<sup>5</sup>, Marcelo Navarrete<sup>5,6</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Fabio Herrera-Rocha<sup>3,*</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
+Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3,4</sup>, Karen Oróstica<sup>5</sup>, Jorge González-Puelma<sup>6,7</sup>, Marcelo Navarrete<sup>6,7</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Frederic Cadet<sup>8,*</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
 <sup>1</sup><sub>Departamento de Ingeniería en Computación, Universidad de Magallanes, Avenida Bulnes 01855, 6210427, Punta Arenas, Chile.</sub><br>
 <sup>2</sup><sub>Departamento de Ciencias Computacionales, Tecnológico Nacional de México/CENIDET, Int. Internado Palmira SN, 62490, Morelos, México.</sub><br>
 <sup>3</sup><sub>Leibniz-Institute of Plant Biochemistry, Department of Bioorganic Chemistry, Weinberg 3, D-06120 Halle, Germany.</sub><br>
-<sup>4</sup><sub>Data Science Institute, Universidad del Desarrollo, Av. Plaza 680, 7610615, Santiago, Chile.</sub><br>
-<sup>5</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br>
-<sup>6</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br>
+<sup>4</sup><sub>Department of Pharmacognosy, Faculty of Pharmacy, Assiut University, 71526 Assiut, Egypt.</sub><br>
+<sup>5</sup><sub>Data Science Institute, Universidad del Desarrollo, Av. Plaza 680, 7610615, Santiago, Chile.</sub><br>
+<sup>6</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br>
+<sup>7</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br>
+<sup>8</sup><sub>PEACCEL, AI for Biologics, Paris, France</sub><br>
 <sup>*</sup><sub>Corresponding authors: Fabio Herrera-Rocha ([FabioEsteban.HerreraRocha@ipb-halle.de](mailto:FabioEsteban.HerreraRocha@ipb-halle.de)) and David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
 
 ---
