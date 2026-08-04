@@ -1,10 +1,10 @@
 # Data-Centric Evaluation of Protein Function Prediction Pipelines
 
-[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)]()
-[![Snakemake](https://img.shields.io/badge/Snakemake-9.19.0-green.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)]()
-[![DOI](https://zenodo.org/badge/DOI/XXXX.svg)]()
-[![Release](https://img.shields.io/github/v/release/<user>/<repository>)]()
+[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
+[![Snakemake](https://img.shields.io/badge/Snakemake-9.19.0-green.svg)](https://snakemake.readthedocs.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21709987.svg)](https://doi.org/10.5281/zenodo.21709987)
+[![GitHub release](https://img.shields.io/github/v/release/kren-ai-lab/protein_ml_decision_analysis)](https://github.com/kren-ai-lab/protein_ml_decision_analysis/releases/latest)
 
 Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3</sup>, Karen Oróstica<sup>4</sup>, Jorge González-Puelma<sup>5</sup>, Marcelo Navarrete<sup>5,6</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Fabio Herrera-Rocha<sup>3,*</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
@@ -889,9 +889,7 @@ If you use this workflow in your research, please cite the associated publicatio
 
 ## Software
 
-```text
-Pending to add Zenodo DOI
-```
+Soto-Garcia, N., Murillo-Acevedo, N., García-Vinuesa, J. A., Islas-Ávila, A. L., Davari, D. M., Murgas-Saavedra, L., Hassanin, A., Oróstica, K., González-Puelma, J., Navarrete, M., Martinez Rebollar, A., Uribe-Paredes, R., Cadet, F., & Medina-Ortiz, D. (2026). *Data-Centric Evaluation of Protein Function Prediction Pipelines* (Version 0.1.0). Zenodo. https://doi.org/10.5281/zenodo.21709987
 
 ## Manuscript
 
