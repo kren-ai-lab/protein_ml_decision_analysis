@@ -16,7 +16,7 @@ Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián Garc
 <sup>6</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br>
 <sup>7</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br>
 <sup>8</sup><sub>PEACCEL, AI for Biologics, Paris, France</sub><br>
-<sup>*</sup><sub>Corresponding authors: Fabio Herrera-Rocha ([FabioEsteban.HerreraRocha@ipb-halle.de](mailto:FabioEsteban.HerreraRocha@ipb-halle.de)) and David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
+<sup>*</sup><sub>Corresponding authors: David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
 
 ---
 
