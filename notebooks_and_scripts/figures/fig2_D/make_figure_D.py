@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""
-Make Figure 2D using real seed/configuration-level MCC values.
+"""Create Figure 2D from source-support model-evaluation results.
 
-This version it reads a raw/long results table containing one row per evaluated run and
-computes, for each source-support subset and split strategy:
+For each source-support subset and split strategy, the script computes:
 
-    mean MCC, SD, SE, 95% CI, n evaluations, n seeds, n configurations
+    mean MCC, seed-level SD, seed-level SE, seed-level 95% CI,
+    n evaluations, n seeds, n matched evaluation units
+
+Point estimates and confidence intervals are calculated from seed-level means.
+Within each seed, the available representation-algorithm evaluations are
+averaged first.
 
 Expected raw information, with flexible column aliases:
     subset/source_support/training_subset
@@ -16,11 +19,11 @@ Expected raw information, with flexible column aliases:
     mcc/MCC/test_mcc OR metric/value long format with metric == mcc
 
 Example:
-    python make_figure_D_real_statistics.py training_results_support_exp.xlsx \
-        --sheet raw_results
+    python make_figure_D.py training_results_source_support.xlsx \
+        --sheet figure_input
 
 If the Excel file contains multiple sheets and you do not know the raw sheet name, run:
-    python make_figure_D_real_statistics.py training_results_support_exp.xlsx --list_sheets
+    python make_figure_D.py training_results_source_support.xlsx --list_sheets
 """
 
 from __future__ import annotations
@@ -39,10 +42,10 @@ import matplotlib.pyplot as plt
 # =========================
 # DEFAULT SETTINGS
 # =========================
-DEFAULT_INPUT_FILE = "training_results_support_exp.xlsx"
-DEFAULT_SHEET = None  # If None, the script tries to auto-detect a raw sheet.
+DEFAULT_INPUT_FILE = "training_results_source_support.xlsx"
+DEFAULT_SHEET = "figure_input"
 
-OUTPUT_PREFIX = "figure_D_real_statistics"
+OUTPUT_PREFIX = "figure_D"
 DPI = 300
 FONT_SIZE = 15
 FIGSIZE = (7, 7)
@@ -199,7 +202,6 @@ def detect_raw_sheet(path: Path) -> str:
     best_score = -1
 
     for sheet in xls.sheet_names:
-        # Avoid selecting the summary sheet used by the old reconstruction script.
         if sheet == "training_trend_ranking":
             continue
         preview = pd.read_excel(path, sheet_name=sheet, nrows=20)
@@ -218,9 +220,7 @@ def detect_raw_sheet(path: Path) -> str:
         raise ValueError(
             "Could not auto-detect a raw results sheet. Available sheets are:\n"
             + "\n".join(f"  - {s}" for s in xls.sheet_names)
-            + "\n\nPass the correct sheet with --sheet SHEET_NAME. Do not use "
-              "training_trend_ranking, because that sheet contains summary values "
-              "used for reconstruction rather than raw MCC values."
+            + "\n\nPass the results sheet with --sheet SHEET_NAME."
         )
     return best_sheet
 
@@ -240,20 +240,27 @@ def ci95(values: pd.Series) -> float:
 
 
 def summarize_group(group: pd.DataFrame) -> pd.Series:
-    values = pd.to_numeric(group["mcc"], errors="coerce").dropna()
-    n = int(values.shape[0])
-    sd = float(values.std(ddof=1)) if n > 1 else np.nan
-    se = float(sd / math.sqrt(n)) if n > 1 else np.nan
+    values = pd.to_numeric(group["mcc"], errors="coerce")
+    valid = group.loc[values.notna(), ["seed"]].copy()
+    valid["mcc"] = values.loc[values.notna()].astype(float).to_numpy()
+
+    # The seed is the independent repetition. Average the model-level units
+    # within each seed before calculating uncertainty.
+    seed_values = valid.groupby("seed", dropna=False)["mcc"].mean()
+    n_evaluations = int(valid.shape[0])
+    n_seeds = int(seed_values.shape[0])
+    sd = float(seed_values.std(ddof=1)) if n_seeds > 1 else np.nan
+    se = float(sd / math.sqrt(n_seeds)) if n_seeds > 1 else np.nan
     return pd.Series({
-        "mean_mcc": float(values.mean()) if n > 0 else np.nan,
+        "mean_mcc": float(seed_values.mean()) if n_seeds > 0 else np.nan,
         "sd_mcc": sd,
         "se_mcc": se,
-        "ci95_mcc": ci95(values),
-        "n_evaluations": n,
-        "n_seeds": group["seed"].nunique() if "seed" in group else np.nan,
+        "ci95_mcc": ci95(seed_values),
+        "n_evaluations": n_evaluations,
+        "n_seeds": n_seeds,
         "n_representations": group["representation"].nunique() if "representation" in group else np.nan,
         "n_algorithms": group["algorithm"].nunique() if "algorithm" in group else np.nan,
-        "n_configurations": group["evaluation_unit"].nunique() if "evaluation_unit" in group else np.nan,
+        "n_evaluation_units": group["evaluation_unit"].nunique() if "evaluation_unit" in group else np.nan,
     })
 
 
@@ -323,8 +330,22 @@ def main() -> None:
         action="store_true",
         help="Use all available rows instead of keeping only complete matched units across all cells.",
     )
+    parser.add_argument(
+        "--expected_evaluations",
+        type=int,
+        default=None,
+        help="Optional expected number of evaluation units per subset/split cell.",
+    )
+    parser.add_argument(
+        "--expected_seeds",
+        type=int,
+        default=None,
+        help="Optional expected number of seeds per subset/split cell.",
+    )
     parser.add_argument("--output_prefix", default=OUTPUT_PREFIX)
     args = parser.parse_args()
+
+    print("Confidence-interval unit: seed-level means")
 
     input_file = Path(args.input_file)
     if not input_file.exists():
@@ -376,6 +397,18 @@ def main() -> None:
 
     df = build_evaluation_unit(df)
 
+    cell_unit_cols = ["subset", "split_type", "evaluation_unit"]
+    duplicate_units = df.duplicated(cell_unit_cols, keep=False)
+    if duplicate_units.any():
+        examples = df.loc[
+            duplicate_units,
+            ["subset", "split_type", "representation", "algorithm", "seed"],
+        ].head(20)
+        raise ValueError(
+            "Duplicated evaluation units were found in the figure input:\n"
+            + examples.to_string(index=False)
+        )
+
     if not args.allow_unmatched:
         before_units = df["evaluation_unit"].nunique()
         df = keep_complete_units(df)
@@ -403,11 +436,34 @@ def main() -> None:
     summary["split_type"] = pd.Categorical(summary["split_type"], categories=EXPECTED_SPLITS, ordered=True)
     summary = summary.sort_values(["split_type", "subset"]).reset_index(drop=True)
 
+    count_checks = pd.Series(False, index=summary.index)
+    requirements: list[str] = []
+    if args.expected_evaluations is not None:
+        count_checks |= summary["n_evaluations"].ne(args.expected_evaluations)
+        requirements.append(f"{args.expected_evaluations} evaluation units")
+    if args.expected_seeds is not None:
+        count_checks |= summary["n_seeds"].ne(args.expected_seeds)
+        requirements.append(f"{args.expected_seeds} seeds")
+
+    bad_counts = summary[count_checks]
+    if requirements and not bad_counts.empty:
+        raise ValueError(
+            "Unexpected Figure 2D input counts. Every subset/split cell must "
+            f"contain {' and '.join(requirements)}. Problematic cells:\n"
+            + bad_counts[
+                ["subset", "split_type", "n_evaluations", "n_seeds"]
+            ].to_string(index=False)
+        )
+
     expected_rows = len(EXPECTED_SUBSETS) * len(EXPECTED_SPLITS)
     if summary.shape[0] != expected_rows:
         observed = set(zip(summary["subset"].astype(str), summary["split_type"].astype(str)))
-        missing = [cell for cell in [(a, b) for b in EXPECTED_SPLITS for a in EXPECTED_SUBSETS]
-                   if (cell[1], cell[0]) not in observed]
+        expected_cells = [
+            (subset, split)
+            for split in EXPECTED_SPLITS
+            for subset in EXPECTED_SUBSETS
+        ]
+        missing = [cell for cell in expected_cells if cell not in observed]
         raise ValueError(f"Missing subset/split cells after filtering: {missing}")
 
     output_prefix = Path(args.output_prefix)
@@ -481,11 +537,11 @@ def main() -> None:
             color=style["color"],
             markerfacecolor=style["color"],
             markeredgecolor=style["color"],
-            markersize=7.0,
-            linewidth=1.6,
+            markersize=5.0,
+            linewidth=1.4,
             elinewidth=1.2,
-            capsize=4,
-            capthick=1.1,
+            capsize=5,
+            capthick=1.4,
             label=style["label"],
             zorder=style["zorder"],
         )
