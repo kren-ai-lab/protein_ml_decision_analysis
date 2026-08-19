@@ -3,8 +3,8 @@
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Snakemake](https://img.shields.io/badge/Snakemake-9.19.0-green.svg)](https://snakemake.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21709987.svg)](https://doi.org/10.5281/zenodo.21709987)
-[![GitHub release](https://img.shields.io/github/v/release/kren-ai-lab/protein_ml_decision_analysis)](https://github.com/kren-ai-lab/protein_ml_decision_analysis/releases/latest)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21709987-blue?style=flat-square)](https://doi.org/10.5281/zenodo.21709987)
+
 
 Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3,4</sup>, Karen Oróstica<sup>5</sup>, Jorge González-Puelma<sup>6,7</sup>, Marcelo Navarrete<sup>6,7</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Frederic Cadet<sup>8,</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
