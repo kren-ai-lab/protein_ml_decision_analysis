@@ -1,203 +1,442 @@
-# Methodological Performance Analysis
+# Training-results aggregation and analysis
 
-## Overview
+## Problem addressed
 
-This workflow consolidates fold-level machine-learning training results and evaluates how methodological decisions affect predictive performance. It is organized into three sequential stages:
+Training workflows can produce thousands of CSV files separated by numerical
+representation, reduction strategy, partition strategy, algorithm,
+configuration, random seed, and scaler. This workflow consolidates those files
+into a master table and supports reproducible comparative analyses.
 
-1. Aggregate individual training-result files into a single table.
-2. Perform an exploratory analysis of partitioning, redundancy reduction, numerical representation, algorithm, and normalization effects.
-3. Construct paired performance deltas and decision rankings relative to predefined reference conditions.
+The complete workflow has three stages:
 
-The workflow is intended for large experimental grids containing multiple representations, reduction strategies, partition strategies, algorithms, hyperparameter configurations, scalers, and random seeds.
-
-## Workflow
+1. discover and aggregate individual training-result files;
+2. prepare the results and generate exploratory analyses; and
+3. calculate paired differences relative to reference conditions and construct
+   methodological rankings.
 
 ```text
-exploration_by_fold_*.csv
-          |
-          v
+training-result files
+        |
+        v
 aggregate_training_results.py
-          |
-          v
-all_results_aggregated_fixed.csv
-          |
-          v
+        |
+        v
+all_results_aggregated_final.csv
+        |
+        v
 exploratory_performance_analysis.ipynb
-          |
-          +--> results_prepared_for_analysis.csv
-          +--> exploratory delta tables
-          +--> analysis_metadata.json
-          |
-          v
+        |
+        v
+results_prepared_for_analysis.csv
+        |
+        v
 paired_delta_analysis.ipynb
-          |
-          +--> paired deltas
-          +--> methodological rankings
-          +--> robustness and sensitivity figures
-          +--> top-configuration comparisons
 ```
 
-## Files
+The aggregation script supports two execution modes:
+
+- **standard mode**, which builds a table from a complete result tree; and
+- **replacement mode**, which preserves a base table while replacing only
+  experiment families that were regenerated.
+
+## Workflow files
 
 | File | Purpose |
-|---|---|
-| `aggregate_training_results.py` | Recursively discovers fold-level CSV files, extracts experiment metadata, aggregates metrics across folds, and writes a single CSV in memory-efficient batches. |
-| `exploratory_performance_analysis.ipynb` | Prepares readable analysis columns, explores methodological effects, calculates initial performance deltas, and saves tables for downstream analyses. |
-| `paired_delta_analysis.ipynb` | Performs matched baseline-versus-candidate comparisons, builds decision rankings, evaluates realistic combinations, and generates robustness and pairwise-comparison figures. |
+| --- | --- |
+| `aggregate_training_results.py` | Discovers CSV files, extracts metadata from names and paths, aggregates metrics, and builds the master table. |
+| `exploratory_performance_analysis.ipynb` | Standardizes labels, explores the effects of methodological decisions, and generates initial delta tables. |
+| `paired_delta_analysis.ipynb` | Compares candidates with equivalent baselines, calculates paired deltas, and constructs rankings and figures. |
 
-The notebooks also require the project helper modules:
+The notebooks use functions provided by the project package:
 
-```text
-building_models/training_models/exploratory_performance.py
-building_models/training_models/paired_delta_analysis.py
+```python
+from building_models.training_models.exploratory_performance import *
+from building_models.training_models.paired_delta_analysis import *
 ```
 
-The `building_models` package must therefore be installed or available in the active Python environment.
+## Important methodological distinctions
 
-## Expected input files
+### Scaler, reduction, and partitioning
 
-The aggregation script recursively searches the input directory for files matching:
+These decisions describe different parts of the workflow and must not be
+combined into a single filter:
 
-```text
-exploration_by_fold_*.csv
-```
+- `scaler` identifies a transformation applied to the variables received by
+  the model;
+- `reduced_by` identifies the space used for redundancy reduction;
+- `split_space_clean` identifies the space used to construct a
+  distance-dependent partition; and
+- `partition_strategy` identifies the dataset-partitioning strategy.
 
-Each CSV may contain the following experiment columns:
+For example, one representation may be used as model input while a different
+representation is used as the reduction space. Similarly, a model-input
+normalization option is not equivalent to a geometric variant of the
+partitioning procedure.
 
-- `algorithm`
-- `partition_strategy`
-- `scaler`
-- `seed`
-- `cfg_idx`
-- `redundancy_strategy`
+### Selection and evaluation
 
-By default, the script attempts to aggregate these validation and test metrics:
+Configurations must be selected using validation metrics such as
+`mcc_val_mean` or `f1_val_mean`. The corresponding test metrics can be reported
+after the selection has been fixed.
 
-```text
-accuracy_val
-precision_val
-recall_val
-f1_val
-mcc_val
-accuracy_test
-precision_test
-recall_test
-f1_test
-mcc_test
-```
+Test metrics may be used for descriptive or sensitivity analyses, but they must
+not participate in selecting models, hyperparameters, or configurations that
+will subsequently be reported on the same test set.
 
-For each available metric, the output contains its fold-level mean, standard deviation, and observation count.
+### Paired comparisons
 
-## Experiment-directory naming
-
-Metadata are inferred from the first experiment directory below the input directory. Supported patterns include:
+In the paired analysis, the difference is defined as:
 
 ```text
-prot_bert_no_reduced
-prot_bert_reduced_homology
-ankh2_ext1_reduced_distance_by_esm2_t6_8M_UR50D
-esmc_300m_reduced_distance
-mistral_Prot_v1_134M_reduced_distance_split_by_mistral_Prot_v1_134M
+delta = candidate performance - baseline performance
 ```
 
-These names are parsed into the following columns:
+A positive delta favors the candidate, whereas a negative delta indicates a
+performance loss. A comparison is interpretable only when the other relevant
+experimental variables remain matched.
 
-- `representation_clean`: representation used to train the model.
-- `reduction_strategy_clean`: no reduction, homology reduction, or distance reduction.
-- `reduced_by`: representation or space used for redundancy reduction.
-- `split_space_clean`: representation or space used to construct the split.
-- `reduction_level`: detected distance percentile or homology threshold.
-- `reduction_percentile`: distance-reduction level, when applicable.
-- `homology_threshold`: homology-reduction threshold, when applicable.
+## Requirements
 
-Distance levels are expected to appear in a path component such as `p90_0`, while homology thresholds are expected in a component such as `minseqid_03`.
+The script requires Python 3.10 or newer and pandas. The notebooks were prepared
+with Python 3.11 and also require Jupyter, NumPy, Matplotlib, and the
+`building_models` package installed in the active environment.
 
-## 1. Aggregate training results
+From the repository root, the project can be installed in editable mode:
 
-Run the script before opening either notebook.
+```bash
+python -m pip install -e .
+```
+
+Verify the environment before running the workflow:
+
+```bash
+python --version
+python -c 'import pandas; print("pandas", pandas.__version__)'
+python -c 'import building_models; print("building_models available")'
+```
+
+## Input-file conventions
+
+The aggregation script searches for files named according to this convention:
+
+```text
+exploration_by_fold_<algorithm>_scaler_<scaler>.csv
+```
+
+When completion markers are required, every CSV must have the following marker
+in the same directory:
+
+```text
+training_done_scaler_<scaler>.txt
+```
+
+Recognized experiment-path patterns include:
+
+```text
+<representation>_no_reduced
+<representation>_reduced_homology
+<representation>_reduced_distance
+<representation>_reduced_distance_by_<space>
+<experiment>_split_by_<space>
+```
+
+Reduction levels are recognized from path components such as:
+
+```text
+p<number>_<number>
+minseqid_<number>
+```
+
+The principal identity columns are:
+
+```text
+algorithm
+partition_strategy
+scaler
+seed
+cfg_idx
+redundancy_strategy
+```
+
+The default metrics include accuracy, precision, recall, F1-score, and MCC for
+validation and test data. For each available metric, the script generates:
+
+```text
+<metric>_mean
+<metric>_std
+<metric>_n
+```
+
+## Recommended mode: complete aggregation
+
+Use this mode when the complete result tree is available and the master table
+must be built from scratch.
+
+From the directory containing `aggregate_training_results.py`:
+
+```bash
+RESULTS_ROOT="/PATH/TO/RESULTS"
+OUTPUT_DIR="analysed_training"
+
+mkdir -p "${OUTPUT_DIR}"
+
+python aggregate_training_results.py \
+  --input-dir "${RESULTS_ROOT}" \
+  --output-csv "${OUTPUT_DIR}/all_results_aggregated_final.csv" \
+  --workers 0 \
+  --files-per-task 128 \
+  --keep-source-file
+```
+
+`--workers 0` automatically selects up to eight processes. Use `--workers 1`
+for sequential troubleshooting or a positive number to limit resource use.
+
+Standard mode excludes the `standard` scaler by default. Explicit filters can
+be defined with:
+
+```text
+--include-scalers <scaler_1> <scaler_2> ...
+--exclude-scalers <scaler_1> <scaler_2> ...
+```
+
+To accept only runs with completion markers, add:
+
+```text
+--require-done-marker
+```
+
+## Replacement mode: updating a subset
+
+Use this mode when selected experiment families have been regenerated and the
+remaining rows from a base table must be preserved.
+
+The procedure is:
+
+1. retain base rows that do not belong to the replacement set;
+2. remove all previous rows from the selected experiment families;
+3. validate the new files before aggregation;
+4. append only accepted replacement results; and
+5. verify coverage, metadata, and duplicates before preserving the output.
+
+### Recommended option: start from an existing aggregate
+
+This option avoids rereading all earlier result files:
+
+```bash
+BASE_AGGREGATED="/PATH/TO/BASE_AGGREGATE.csv"
+REPLACEMENT_ROOT="/PATH/TO/REPLACEMENT_RESULTS"
+OUTPUT_DIR="analysed_training"
+
+mkdir -p "${OUTPUT_DIR}"
+
+python aggregate_training_results.py \
+  --base-aggregated-csv "${BASE_AGGREGATED}" \
+  --replacement-input-dir "${REPLACEMENT_ROOT}" \
+  --replacement-experiments experiment_family_a experiment_family_b \
+  --output-csv "${OUTPUT_DIR}/all_results_aggregated_final.csv" \
+  --workers 0 \
+  --files-per-task 128 \
+  --keep-source-file
+```
+
+The script retains a default replacement list in
+`CORRECTED_ONEHOT_EXPERIMENTS`. Specify `--replacement-experiments` so the
+selected subset is documented in the command, but use names that are compatible
+with that list and with the implemented normalization rules.
+
+The current replacement mode is specialized for one-hot results with
+`scaler=none`. To apply it to other representations or scaler policies, first
+extend `fix_corrected_onehot_split_space()` and the checks performed by
+`check_aggregated_results()`.
+
+### Optional coverage validation
+
+If the expected size of the result matrix is known, additional checks can be
+enabled with:
+
+```text
+--expected-replacement-files <total>
+--expected-contexts-per-algorithm <count>
+--replacement-algorithms <algorithm_1> <algorithm_2> ...
+```
+
+These values must be calculated from the current experimental design. Do not
+copy counts that belong to a different dataset or configuration grid.
+
+Replacement-mode preflight requires completion markers and accepts only
+replacement files with `scaler=none`.
+
+## Alternative: rebuild the base from raw results
+
+If a base aggregate is unavailable, it can be rebuilt from `--input-dir` and
+combined with the replacement tree:
+
+```bash
+BASE_RESULTS_ROOT="/PATH/TO/BASE_RESULTS"
+REPLACEMENT_ROOT="/PATH/TO/REPLACEMENT_RESULTS"
+OUTPUT_DIR="analysed_training"
+
+python aggregate_training_results.py \
+  --input-dir "${BASE_RESULTS_ROOT}" \
+  --replacement-input-dir "${REPLACEMENT_ROOT}" \
+  --replacement-experiments experiment_family_a experiment_family_b \
+  --output-csv "${OUTPUT_DIR}/all_results_aggregated_final.csv" \
+  --workers 0 \
+  --keep-source-file
+```
+
+Replacement mode requires exactly one base source:
+
+- `--base-aggregated-csv`; or
+- `--input-dir`.
+
+The two options cannot be used together, and one of them must be provided.
+
+## Commands that must **not** be used
+
+Do not aggregate only the replacement tree and then treat it as the complete
+master table:
 
 ```bash
 python aggregate_training_results.py \
-    --input-dir train_models_ml_classic_outputs \
-    --output-csv analysed_training/all_results_aggregated_fixed.csv \
-    --keep-source-file
+  --input-dir "${REPLACEMENT_ROOT}" \
+  --output-csv "${OUTPUT_DIR}/all_results_aggregated_final.csv"
 ```
 
-The output name `all_results_aggregated_fixed.csv` is used by the exploratory notebook. A different filename can be used, but the input path in the notebook must then be updated.
+This is a valid independent aggregation command, but its output represents only
+the subset present in `REPLACEMENT_ROOT`.
 
-### Scaler filtering
+Do not apply globally a filter that is intended only for the replaced subset.
+Inclusion and exclusion rules must reflect the design of each experiment
+family.
 
-The script excludes the `standard` scaler by default. To retain every scaler, run:
+Finally, do not rank or select final configurations using `mcc_test_mean`,
+`f1_test_mean`, or any other test metric. Select with validation metrics first,
+then inspect test performance for the locked selection.
+
+## Expected validation messages
+
+During execution, the program reports:
+
+- the number of discovered and accepted files;
+- files skipped because of filters or missing markers;
+- processing speed and estimated remaining time;
+- metrics missing from accepted files;
+- aggregated row counts;
+- the number of experiment families;
+- the scaler distribution; and
+- the result of replacement-mode checks.
+
+For a correctly configured replacement run, verify that:
+
+- the accepted total matches the expected values, when provided;
+- `duplicate_identities: 0`;
+- the requested experiment families are present in the output; and
+- representation and split-space metadata are consistent.
+
+Replacement mode adds the `result_origin` column:
+
+| Value | Meaning |
+| --- | --- |
+| `historical` | Row retained from the base table. |
+| `corrected_onehot_replacement` | Row appended from the replacement set. |
+
+The second value is retained for compatibility with earlier script outputs.
+
+## Independent audit of the master CSV
+
+After aggregation, the following independent check can be executed:
 
 ```bash
-python aggregate_training_results.py \
-    --input-dir train_models_ml_classic_outputs \
-    --output-csv analysed_training/all_results_aggregated_fixed.csv \
-    --exclude-scaler none \
-    --keep-source-file
+MASTER="analysed_training/all_results_aggregated_final.csv"
+
+python - "${MASTER}" <<'PY'
+import sys
+from collections import Counter
+
+import pandas as pd
+
+path = sys.argv[1]
+required = {
+    "experiment_dir",
+    "algorithm",
+    "partition_strategy",
+    "scaler",
+    "seed",
+    "cfg_idx",
+}
+
+rows = 0
+experiments = set()
+scalers = Counter()
+origins = Counter()
+columns = None
+
+for chunk in pd.read_csv(path, chunksize=200_000, low_memory=False):
+    if columns is None:
+        columns = set(chunk.columns)
+        missing = required - columns
+        if missing:
+            raise SystemExit(f"ERROR: missing columns: {sorted(missing)}")
+
+    rows += len(chunk)
+    experiments.update(chunk["experiment_dir"].dropna().astype(str))
+    scalers.update(chunk["scaler"].dropna().astype(str))
+
+    if "result_origin" in chunk.columns:
+        origins.update(chunk["result_origin"].dropna().astype(str))
+
+if rows == 0:
+    raise SystemExit("ERROR: the aggregate contains no rows")
+
+metric_means = sorted(
+    column for column in (columns or set()) if column.endswith("_mean")
+)
+if not metric_means:
+    raise SystemExit("ERROR: no aggregated metrics were found")
+
+print("Rows:", rows)
+print("Experiment families:", len(experiments))
+print("Scalers:", dict(scalers))
+print("Origins:", dict(origins))
+print("Aggregated metrics:", metric_means)
+print("BASIC AUDIT PASSED")
+PY
 ```
 
-### Selected metrics
+This audit verifies the basic structure and contents. Expected row, algorithm,
+seed, or experiment-family counts must be defined from the configuration that
+produced the results.
 
-A subset of metrics can be requested explicitly:
+## Running the downstream analyses
 
-```bash
-python aggregate_training_results.py \
-    --input-dir train_models_ml_classic_outputs \
-    --output-csv analysed_training/all_results_aggregated_fixed.csv \
-    --metrics accuracy_val f1_val mcc_test
-```
+### 1. Exploratory analysis
 
-### Main command-line options
-
-| Option | Description |
-|---|---|
-| `--input-dir` | Base directory containing the training-result hierarchy. Required. |
-| `--output-csv` | Destination of the aggregated CSV. Required. |
-| `--metrics` | Metric columns to aggregate. |
-| `--exclude-scaler` | Scaler to remove. Use `none` to retain all scalers. |
-| `--chunksize-files` | Number of per-file aggregated tables kept in memory before writing a batch. |
-| `--keep-source-file` | Adds the original CSV path to the aggregated output. |
-| `--progress-every` | Reports processing progress every N input files. Use `0` to disable. |
-| `--discovery-progress-every` | Reports file-discovery progress every N visited directories. Use `0` to disable. |
-| `--skip-check` | Skips the final diagnostic read of the complete aggregated CSV. Useful for very large outputs. |
-
-Files without any requested metrics are skipped and reported. Files that become empty after scaler filtering are also counted in the final summary.
-
-## 2. Run the exploratory performance analysis
-
-Open:
-
-```text
-exploratory_performance_analysis.ipynb
-```
-
-The notebook expects:
+The `exploratory_performance_analysis.ipynb` notebook defines:
 
 ```python
 folder_path = "../../analysed_training"
 ```
 
-Update this value when the analysis directory is located elsewhere.
-
-The notebook loads:
+It expects the following file inside that directory:
 
 ```text
-all_results_aggregated_fixed.csv
+all_results_aggregated_final.csv
 ```
 
-It then:
+Update `folder_path` when the table is stored elsewhere. The current loading
+cell excludes `LGBMClassifier`; remove or change that filter if the algorithm
+must be included in the analysis.
 
-- excludes `LGBMClassifier`;
-- standardizes representation, partition, and reduction labels;
-- compares partition strategies globally and by representation or algorithm;
-- compares no reduction, distance reduction, and homology reduction;
-- evaluates distance percentiles and homology thresholds;
-- examines representation-by-reducer, representation-by-algorithm, partition-by-algorithm, and reduction-by-algorithm combinations;
-- calculates deltas relative to no reduction, random partitioning, and no normalization;
-- evaluates F1-score and MCC as the main test metrics.
+The notebook evaluates the effects of:
 
-Run all cells in order. The notebook saves the following files in `folder_path`:
+- partition strategy;
+- reduction strategy and level;
+- training representation and reduction space;
+- algorithm; and
+- scaler.
+
+The final cell saves the following files in `folder_path`:
 
 ```text
 results_prepared_for_analysis.csv
@@ -210,142 +449,110 @@ delta_partition_reduction_f1.csv
 analysis_metadata.json
 ```
 
-`results_prepared_for_analysis.csv` is the required input for the paired-delta notebook.
+`results_prepared_for_analysis.csv` is the required input for the next
+notebook.
 
-## 3. Run the paired delta and ranking analysis
+### 2. Paired-delta analysis
 
-Open:
+The `paired_delta_analysis.ipynb` notebook reads:
 
 ```text
-paired_delta_analysis.ipynb
+<folder_path>/results_prepared_for_analysis.csv
 ```
 
-Set the same analysis directory used in the exploratory notebook:
+The analysis compares candidates with equivalent reference conditions to
+evaluate:
+
+- partitioning relative to Random;
+- reduction relative to No reduction;
+- embeddings relative to One-hot;
+- scalers relative to `none`;
+- algorithm robustness; and
+- complete methodological combinations.
+
+Before execution, review:
+
+```text
+METRICS
+PRIMARY_METRIC
+SECONDARY_METRIC
+BASELINE_PARTITION
+BASELINE_REDUCTION
+BASELINE_SCALER
+REALISTIC_PARTITIONS
+REALISTIC_REDUCTIONS
+```
+
+The rankings include pair and seed coverage, baseline and candidate means,
+delta, loss, retention, variability, and the proportion of negative deltas.
+The notebook also calculates pattern enrichment, comparisons between leading
+configurations, and bootstrap intervals.
+
+The principal tables remain as in-memory DataFrames. If they must be included
+in a release, export them explicitly, for example:
 
 ```python
-folder_path = "../../analysed_training"
+from pathlib import Path
+
+R8_realistic_ranking_with_algorithm.to_csv(
+    Path(folder_path) / "R8_realistic_ranking_with_algorithm.csv",
+    index=False,
+)
 ```
 
-The notebook loads:
+Some figures use paths constructed from `folder_path`, whereas others use only
+a filename. To centralize all outputs, always provide a complete path to the
+`output_file` argument.
 
-```text
-results_prepared_for_analysis.csv
-```
+## Recommended execution order
 
-### Delta convention
+1. verify the environment and input-file conventions;
+2. run `aggregate_training_results.py --help`;
+3. generate `all_results_aggregated_final.csv`;
+4. review counters, missing metrics, and the final audit;
+5. run the independent audit if the table will be used for reporting;
+6. configure and execute the exploratory notebook from beginning to end;
+7. confirm that `results_prepared_for_analysis.csv` and
+   `analysis_metadata.json` were created;
+8. review metrics, baselines, and scenarios in the paired-analysis notebook;
+9. execute the paired-analysis notebook from beginning to end; and
+10. export the tables and figures that must be retained.
 
-For every matched comparison:
-
-```text
-delta = candidate performance - baseline performance
-loss  = baseline performance - candidate performance
-```
-
-Therefore:
-
-- positive delta: the candidate improves over the baseline;
-- zero delta: both conditions perform equally;
-- negative delta: the candidate loses performance;
-- smaller loss: better preservation of baseline performance.
-
-### Main reference conditions
-
-The paired analyses use the following reference conditions, depending on the question:
-
-- **Partition:** Random.
-- **Redundancy reduction:** No reduction.
-- **Numerical representation:** One-hot.
-- **Feature normalization:** `none`.
-- **Complete combination:** same representation and algorithm with Random partition, No reduction, and `scaler=none`.
-
-The remaining experimental variables are matched whenever possible, including algorithm, configuration index, seed, scaler, representation, reduction level, and partition context.
-
-### Main analyses
-
-The notebook addresses the following questions:
-
-1. Which partition strategy best preserves performance relative to Random?
-2. Which reduction strategy best preserves performance relative to No reduction?
-3. Which embedding improves or preserves performance relative to One-hot?
-4. Does normalization improve or worsen performance relative to no normalization?
-5. Which algorithm is most robust to methodological changes?
-6. Which complete and realistic methodological combinations produce the smallest performance loss?
-7. Which features are enriched among the highest-ranked configurations?
-8. Are the top configurations meaningfully different in direct paired comparisons?
-
-F1-score is used as the primary ranking metric and MCC as the secondary metric.
-
-### Ranking logic
-
-The decision rankings prioritize configurations using:
-
-1. lower average performance loss;
-2. sufficient paired observations;
-3. competitive candidate performance;
-4. lower delta variability;
-5. the secondary metric as an additional tie-breaker when available.
-
-The notebook also analyzes algorithm sensitivity, realistic distance-aware scenarios, outliers, top-ranked feature patterns, percentile-based top subsets, and paired differences between leading configurations.
-
-## Generated figures
-
-The paired-delta notebook creates figures including:
-
-```text
-R1_partition_ranking_boxplot_pretty.png
-R2_reduction_ranking_boxplot_random.png
-R2_reduction_ranking_boxplot_stratified.png
-R2_reduction_ranking_boxplot_distance.png
-R3_representation_ranking_boxplot_pretty.png
-R4_scaler_ranking_boxplot.png
-R5_algorithm_ranking_boxplot.png
-S1_algorithm_sensitivity_distanceaware_partition.png
-S1_algorithm_sensitivity_stratified_partition.png
-S2_algorithm_sensitivity_distance_reduction.png
-S2_algorithm_sensitivity_homology_reduction.png
-S3_algorithm_sensitivity_scaler.png
-R5_complete_combination_ranking_boxplot.png
-RE_complete_combination_ranking_boxplot.png
-R6_realistic_combination_ranking_boxplot.png
-R7_realistic_ranking_collapsed_scaler_boxplot.png
-R8_realistic_ranking_with_algorithm_boxplot.png
-R7_pairwise_top_config_differences.png
-R8_pairwise_top_config_differences.png
-```
-
-### Output-location note
-
-In the current notebook, some figure calls use `folder_path`, while others provide only a filename. Consequently:
-
-- figures using `f"{folder_path}/..."` are written to the analysis directory;
-- figures using only `"filename.png"` are written to the notebook's current working directory.
-
-For a single output location, define:
-
-```python
-output_dir = Path(folder_path) / "delta_analysis_outputs"
-output_dir.mkdir(parents=True, exist_ok=True)
-```
-
-and pass paths such as:
-
-```python
-output_file=output_dir / "R1_partition_ranking_boxplot_pretty.png"
-```
-
-
-## Execution summary
+For non-interactive execution, after configuring the paths:
 
 ```bash
-# 1. Aggregate fold-level results
-python aggregate_training_results.py \
-    --input-dir train_models_ml_classic_outputs \
-    --output-csv analysed_training/all_results_aggregated_fixed.csv \
-    --keep-source-file
+jupyter nbconvert \
+  --to notebook \
+  --execute exploratory_performance_analysis.ipynb \
+  --output exploratory_performance_analysis.executed.ipynb
 
-# 2. Run all cells
-jupyter lab exploratory_performance_analysis.ipynb
-
-# 3. Run all cells after the exploratory notebook finishes
-jupyter lab paired_delta_analysis.ipynb
+jupyter nbconvert \
+  --to notebook \
+  --execute paired_delta_analysis.ipynb \
+  --output paired_delta_analysis.executed.ipynb
 ```
+
+## Simple aggregation mode
+
+To use only the general aggregation functionality:
+
+```bash
+python aggregate_training_results.py \
+  --input-dir /PATH/TO/RESULTS \
+  --output-csv analysed_training/aggregated.csv \
+  --keep-source-file
+```
+
+This mode does not perform replacements. Metrics can be selected with
+`--metrics`, scalers can be controlled with `--include-scalers` or
+`--exclude-scalers`, and completion markers can be required with
+`--require-done-marker`.
+
+## Reproducibility
+
+- preserve the command used to generate the aggregate;
+- keep `analysis_metadata.json` with the derived tables;
+- record Python and dependency versions;
+- save executed copies of the notebooks;
+- document changes to filters, baselines, metrics, and scenarios; and
+- associate final results with a repository commit or release tag.

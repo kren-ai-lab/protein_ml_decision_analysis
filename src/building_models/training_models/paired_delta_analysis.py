@@ -128,8 +128,8 @@ def compute_paired_delta(
 def make_decision_ranking(
     delta_df,
     group_cols,
-    primary_metric="f1_test_mean",
-    secondary_metric="mcc_test_mean",
+    primary_metric=PRIMARY_METRIC,
+    secondary_metric=SECONDARY_METRIC,
     rank_context_cols=None,
     performance_filter="median",
     min_pairs=5,
@@ -383,7 +383,7 @@ def make_decision_ranking(
 def plot_R1_partition_ranking_boxplot(
     delta_partition,
     R1_partition_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     output_file=None,
 ):
     """
@@ -491,7 +491,7 @@ def plot_R1_partition_ranking_boxplot(
 
         ax.boxplot(
             data,
-            labels=labels,
+            tick_labels=labels,
             vert=False,
             showfliers=True,
         )
@@ -552,7 +552,7 @@ def clean_context_label(context):
 def plot_R1_partition_ranking_boxplot_pretty(
     delta_partition,
     R1_partition_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     output_file=None,
     max_label_chars=26,
     xlim=None,
@@ -799,7 +799,7 @@ def plot_R2_reduction_ranking_boxplot(
     delta_reduction_rank,
     R2_reduction_ranking,
     partition_name="Random",
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n_per_representation=8,
     ncols=3,
     rank_col="rank_by_lowest_loss",
@@ -974,7 +974,7 @@ def plot_R2_reduction_ranking_boxplot(
 
         ax.boxplot(
             data,
-            labels=labels,
+            tick_labels=labels,
             vert=False,
             showfliers=True,
         )
@@ -1033,7 +1033,7 @@ def plot_R2_reduction_ranking_boxplot_pretty(
     delta_reduction_rank,
     R2_reduction_ranking,
     partition_name="Random",
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n_per_representation=8,
     ncols=3,
     rank_col="rank_by_lowest_loss",
@@ -1297,7 +1297,7 @@ def plot_R2_reduction_ranking_boxplot_pretty(
 def plot_R3_representation_ranking_boxplot(
     delta_rep_vs_onehot,
     R3_representation_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n_per_partition=10,
     ncols=2,
     rank_col="rank_by_lowest_loss",
@@ -1466,7 +1466,7 @@ def plot_R3_representation_ranking_boxplot(
 
         ax.boxplot(
             data,
-            labels=labels,
+            tick_labels=labels,
             vert=False,
             showfliers=True,
         )
@@ -1523,7 +1523,7 @@ def clean_label(label):
 def plot_R3_representation_ranking_boxplot_pretty(
     delta_rep_vs_onehot,
     R3_representation_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n_per_partition=10,
     ncols=2,
     rank_col="rank_by_lowest_loss",
@@ -1791,7 +1791,7 @@ def plot_R3_representation_ranking_boxplot_pretty(
 def plot_R4_scaler_ranking_boxplot(
     delta_scaler,
     R4_scaler_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     rank_col="rank_by_lowest_loss",
     output_file=None,
 ):
@@ -1881,7 +1881,7 @@ def plot_R4_scaler_ranking_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -1904,7 +1904,7 @@ def plot_R4_scaler_ranking_boxplot(
 def plot_R5_algorithm_ranking_boxplot(
     delta_algorithm_pool,
     R5_algorithm_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     rank_col="rank_by_lowest_loss",
     output_file=None,
 ):
@@ -1996,7 +1996,7 @@ def plot_R5_algorithm_ranking_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -2022,7 +2022,7 @@ def plot_algorithm_sensitivity_boxplot(
     ranking_df,
     group_cols,
     panel_col,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     rank_col="rank_by_lowest_loss",
     filters=None,
     top_n_per_panel=10,
@@ -2156,7 +2156,7 @@ def plot_algorithm_sensitivity_boxplot(
 
         ax.boxplot(
             data,
-            labels=labels,
+            tick_labels=labels,
             vert=False,
             showfliers=True,
         )
@@ -2214,7 +2214,7 @@ def plot_algorithm_sensitivity_boxplot_pretty_original_style(
     ranking_df,
     group_cols,
     panel_col,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     rank_col="rank_by_lowest_loss",
     filters=None,
     top_n_per_panel=10,
@@ -2356,7 +2356,7 @@ def plot_algorithm_sensitivity_boxplot_pretty_original_style(
 
         box = ax.boxplot(
             data,
-            labels=labels,
+            tick_labels=labels,
             vert=False,
             showfliers=True,
             patch_artist=True,
@@ -2447,7 +2447,7 @@ def plot_algorithm_sensitivity_boxplot_pretty_original_style(
 def plot_R5_combination_ranking_boxplot(
     delta_combination,
     R5_combination_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -2531,7 +2531,7 @@ def plot_R5_combination_ranking_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -2557,7 +2557,7 @@ def plot_R5_combination_ranking_boxplot(
 def plot_RE_combination_ranking_boxplot(
     delta_combination,
     RE_combination_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -2625,7 +2625,7 @@ def plot_RE_combination_ranking_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -2651,7 +2651,7 @@ def plot_RE_combination_ranking_boxplot(
 def plot_R7_realistic_ranking_collapsed_scaler_boxplot(
     delta_combination_realistic,
     R7_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -2732,7 +2732,7 @@ def plot_R7_realistic_ranking_collapsed_scaler_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -2789,7 +2789,7 @@ def clean_label(label):
 def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty(
     delta_combination_realistic,
     R7_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -2880,7 +2880,7 @@ def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty(
 
     box = ax.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
         patch_artist=True,
@@ -2963,7 +2963,7 @@ def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty(
 def get_R7_boxplot_outliers(
     delta_combination_realistic,
     R7_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
 ):
@@ -3063,7 +3063,7 @@ def get_R7_boxplot_outliers(
 
 def plot_positive_outlier_summary(
     outliers_df,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     positive_outlier_label="bajo",
     figsize=(13, 5.5),
     output_file=None,
@@ -3075,7 +3075,7 @@ def plot_positive_outlier_summary(
     ----------
     outliers_df : pandas.DataFrame
         DataFrame containing baseline, candidate and outlier-type columns.
-    metric : str, default="f1_test_mean"
+    metric : str, default=PRIMARY_METRIC
         Metric used for the comparison.
     positive_outlier_label : str, default="bajo"
         Value in ``outlier_type`` identifying the selected outliers.
@@ -3289,7 +3289,13 @@ def format_metric_es(metric):
     Convert metric column names into cleaner labels for the plot.
     """
     metric_map = {
+        "accuracy_val_mean": "accuracy promedio en validación",
+        "precision_val_mean": "precision promedio en validación",
+        "recall_val_mean": "recall promedio en validación",
+        "f1_val_mean": "F1 promedio en validación",
+        "mcc_val_mean": "MCC promedio en validación",
         "f1_test_mean": "F1 promedio en test",
+        "mcc_test_mean": "MCC promedio en test",
         "accuracy_test_mean": "accuracy promedio en test",
         "balanced_accuracy_test_mean": "balanced accuracy promedio en test",
         "roc_auc_test_mean": "ROC-AUC promedio en test",
@@ -3338,7 +3344,7 @@ def build_short_y_label(row, rank_col):
 def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty_es(
     delta_combination_realistic,
     R7_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -3422,7 +3428,7 @@ def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty_es(
 
     box = ax.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
         patch_artist=True,
@@ -3503,7 +3509,7 @@ def plot_R7_realistic_ranking_collapsed_scaler_boxplot_pretty_es(
 def plot_R8_realistic_ranking_with_algorithm_boxplot(
     delta_combination_realistic,
     R8_ranking,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=30,
     rank_col="rank_by_lowest_loss",
     output_file=None,
@@ -3586,7 +3592,7 @@ def plot_R8_realistic_ranking_with_algorithm_boxplot(
 
     plt.boxplot(
         data,
-        labels=labels,
+        tick_labels=labels,
         vert=False,
         showfliers=True,
     )
@@ -3879,7 +3885,7 @@ def paired_compare_top_configs(
     ranking_df,
     group_cols,
     pair_cols,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=10,
     rank_col="rank_by_lowest_loss",
     n_boot=2000,
@@ -4009,7 +4015,7 @@ def paired_compare_top_configs(
 
 def plot_pairwise_config_differences(
     pairwise_df,
-    metric="f1_test_mean",
+    metric=PRIMARY_METRIC,
     top_n=20,
     title=None,
     output_file=None,

@@ -1,4 +1,12 @@
+# Metrics calculated in the paired analyses.
+# Validation metrics are used for ranking and model/configuration selection.
+# Test metrics are retained only for reporting after the selection is fixed.
 METRICS = [
+    "accuracy_val_mean",
+    "precision_val_mean",
+    "recall_val_mean",
+    "f1_val_mean",
+    "mcc_val_mean",
     "accuracy_test_mean",
     "precision_test_mean",
     "recall_test_mean",
@@ -6,8 +14,17 @@ METRICS = [
     "mcc_test_mean",
 ]
 
-PRIMARY_METRIC = "f1_test_mean"
-SECONDARY_METRIC = "mcc_test_mean"
+# Primary model/configuration-selection criterion.
+PRIMARY_METRIC = "mcc_val_mean"
+
+# Predefined validation-based tie-breaker.
+SECONDARY_METRIC = "f1_val_mean"
+
+# Metrics reserved for final reporting after selection.
+TEST_REPORT_METRICS = [
+    "mcc_test_mean",
+    "f1_test_mean",
+]
 
 BASELINE_PARTITION = "Random"
 
