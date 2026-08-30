@@ -1,12 +1,12 @@
 # Data-Centric Evaluation of Protein Function Prediction Pipelines
 
-[![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Snakemake](https://img.shields.io/badge/Snakemake-9.19.0-green.svg)](https://snakemake.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21709987-blue?style=flat-square)](https://doi.org/10.5281/zenodo.21709987)
 
 
-Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3,4</sup>, Karen Oróstica<sup>5</sup>, Jorge González-Puelma<sup>6,7</sup>, Marcelo Navarrete<sup>6,7</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Frederic Cadet<sup>8,</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
+Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3,4</sup>, Karen Oróstica<sup>5</sup>, Jorge González-Puelma<sup>6,7</sup>, Marcelo Navarrete<sup>6,7</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Frederic Cadet<sup>8</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
 
 <sup>1</sup><sub>Departamento de Ingeniería en Computación, Universidad de Magallanes, Avenida Bulnes 01855, 6210427, Punta Arenas, Chile.</sub><br>
 <sup>2</sup><sub>Departamento de Ciencias Computacionales, Tecnológico Nacional de México/CENIDET, Int. Internado Palmira SN, 62490, Morelos, México.</sub><br>
@@ -15,12 +15,12 @@ Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián Garc
 <sup>5</sup><sub>Data Science Institute, Universidad del Desarrollo, Av. Plaza 680, 7610615, Santiago, Chile.</sub><br>
 <sup>6</sup><sub>Centro Asistencial Docente e Investigación, Universidad de Magallanes, Av. Los Flamencos 01364, Punta Arenas, Chile.</sub><br>
 <sup>7</sup><sub>Escuela de Medicina, Universidad de Magallanes, Avenida Bulnes 01855, Punta Arenas, Chile.</sub><br>
-<sup>8</sup><sub>PEACCEL, AI for Biologics, Paris, France</sub><br>
-<sup>*</sup><sub>Corresponding authors: David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
+<sup>8</sup><sub>PEACCEL, AI for Biologics, Paris, France.</sub><br>
+<sup>*</sup><sub>Corresponding author: David Medina-Ortiz ([david.medina@umag.cl](mailto:david.medina@umag.cl)).</sub><br>
 
 ---
 
-A reproducible **Snakemake-based** framework for building machine learning experiments from protein and peptide sequence datasets. The repository implements a **data-centric machine learning workflow**, allowing users to generate numerical sequence representations, construct redundancy-reduced datasets, create reproducible training/test partitions, and benchmark multiple machine learning algorithms under different experimental settings.
+A reproducible **Snakemake-based** framework for building machine learning experiments from protein and peptide sequence datasets. The repository implements a **data-centric machine learning workflow**, allowing users to generate numerical sequence representations, construct redundancy-reduced datasets, create reproducible train, validation, and test partitions, and benchmark multiple machine learning algorithms under different experimental settings.
 
 The pipeline is designed to facilitate systematic comparisons between sequence representations, redundancy reduction strategies, dataset partitioning approaches, and supervised learning algorithms while maintaining complete experiment reproducibility.
 
@@ -28,16 +28,19 @@ The pipeline is designed to facilitate systematic comparisons between sequence r
 # Table of contents
 
 - [Overview](#overview)
+- [Workflow Overview](#workflow-overview)
+- [Workflow Capabilities](#workflow-capabilities)
 - [Repository Structure](#repository-structure)
 - [Software Requirements](#software-requirements)
 - [Installation](#installation)
 - [Input Dataset](#input-dataset)
 - [Quick Start](#quick-start)
 - [Workflow Description](#workflow-description)
-    - Numerical Representations
-    - Dataset Reduction
-    - Dataset Splitting
-    - Model Training
+  - [Numerical Representations](#1-numerical-representations)
+  - [Dataset Reduction](#2-dataset-reduction)
+  - [Dataset Splitting](#3-dataset-splitting)
+  - [Training Process](#4-training-process)
+- [Study-specific Downstream Analyses](#study-specific-downstream-analyses)
 - [Configuration](#configuration)
 - [Output Structure](#output-structure)
 - [Reproducibility](#reproducibility)
@@ -63,7 +66,9 @@ Each stage is implemented as an independent Snakemake workflow with explicit inp
 
 Intermediate workflow artefacts are preserved after execution, enabling downstream workflows to reuse previously generated outputs without repeating earlier computational steps.
 
-Workflow behavior is controlled through workflow-specific `config.yaml` files, allowing different datasets, numerical representations, reduction strategies, partitioning methods, and machine learning configurations to be evaluated reproducibly.
+Workflow behaviour is controlled through workflow-specific `config.yaml` files, allowing different datasets, numerical representations, reduction strategies, partitioning methods, and machine learning configurations to be evaluated reproducibly.
+
+The accompanying antioxidant protein case study evaluates one-hot encoding and six pretrained protein language model representations as model inputs and as numerical spaces for redundancy control and distance-aware partitioning. The repository also contains the downstream analyses used to quantify source support, representation geometry, train--test similarity, paired performance changes, and structural agreement with MMseqs2 sequence-identity clusters.
 
 ---
 
@@ -89,10 +94,10 @@ The workflow stages are:
 
 | Workflow | Purpose |
 |----------|---------|
-| **Numerical Representations** | Generate numerical representations from protein or peptide sequences and optionally analyze the resulting representation space. |
-| **Dataset Reduction** | Generate reduced datasets using embedding-distance, homology-based, or descriptor-based reduction strategies. |
+| **Numerical Representations** | Generate numerical representations from protein or peptide sequences and optionally analyse the resulting representation space. |
+| **Dataset Reduction** | Generate reduced datasets using protein-language-model cosine similarity, MMseqs2 sequence identity, or Euclidean distance between flattened one-hot representations. |
 | **Dataset Splitting** | Generate train, validation, and test partitions from reduced and non-reduced datasets using different partitioning strategies. |
-| **Training Process** | Train supervised machine learning models using the generated dataset partitions and summarize model performance. |
+| **Training Process** | Train supervised machine learning models using the generated dataset partitions and summarise model performance. |
 
 Each workflow is configured through its corresponding `config.yaml` file, allowing different datasets, representations, reduction methods, partitioning strategies, and training settings to be evaluated independently.
 
@@ -111,17 +116,18 @@ Main features include:
 - Support for protein language model embeddings.
 - Support for one-hot sequence representations.
 - Support for multiple dataset redundancy reduction strategies:
-  - embedding-distance reduction;
+  - protein-language-model embedding-distance reduction using cosine similarity;
   - homology-based reduction;
-  - descriptor-based reduction.
-- Support for multiple dataset partitioning strategies.
+  - Euclidean-distance reduction of flattened, unscaled one-hot representations.
+- Support for random, stratified, and distance-aware dataset partitioning.
+- Representation-specific distance-aware partitioning using cosine distance for protein language model embeddings and Euclidean distance for one-hot representations.
 - Automated validation of generated dataset partitions before model training.
 - Support for multiple supervised machine learning algorithms.
 - Automatic generation of workflow artefacts, including:
   - numerical representations;
   - reduced datasets;
   - dataset partitions;
-  - trained models;
+  - model-training outputs;
   - performance metrics;
   - diagnostic summaries.
 - Preservation of workflow outputs to facilitate reproducibility and downstream analyses.
@@ -130,7 +136,7 @@ Main features include:
 
 ## Repository Structure
 
-The repository is organized into independent Snakemake workflows and supporting scripts. Each workflow performs a specific stage of the machine learning pipeline, while auxiliary scripts and notebooks are provided for data preparation and downstream analyses.
+The repository is organised into independent Snakemake workflows, a reusable Python package, data-preparation notebooks, figure-generation scripts, and downstream methodological analyses. Generated outputs are written to dedicated directories at the project root.
 
 ```text
 .
@@ -139,10 +145,16 @@ The repository is organized into independent Snakemake workflows and supporting 
 │   └── random_seeds_n.csv (n = number of seeds to use)
 │
 ├── notebooks_and_scripts/
+│   ├── analysed_training/
+│   ├── figures/
+│   ├── matched_size_mmseqs2/
 │   ├── parsers/
 │   ├── pivoting_data/
 │   ├── preprocessing_and_cleaning/
+│   ├── train_test_similarity/
+│   ├── source_support_analysis/
 │   └── scripts_for_pipelines/
+│       ├── descriptor_euclidean_analysis_space.py
 │       ├── embedding_analysis_space.py
 │       ├── run_biosieve_reducers_from_percentiles.py
 │       ├── run_descriptor_euclidean_reduction.py
@@ -166,13 +178,18 @@ The repository is organized into independent Snakemake workflows and supporting 
 │       ├── Snakefile
 │       └── config/config.yaml
 │
-├── numerical_representation_data/
-├── reduced_distance/
-├── reduced_homology/
-├── reduced_descriptor/
-├── reduction_analysis/
-├── split_process/
-└── training_process/
+├── src/
+│   └── building_models/
+│
+├── numerical_representation_data/          # Generated output
+├── reduced_distance/                       # Generated output
+├── reduced_homology/                       # Generated output
+├── reduced_descriptor/                     # Generated output
+├── reduction_analysis/                     # Generated output
+├── split_process/                          # Generated output
+├── training_process/                       # Generated output
+├── train_test_similarity/                  # Generated analysis output
+└── matched_retention_mmseqs2_benchmark/    # Generated benchmark output
 ```
 
 ## Directory Description
@@ -180,18 +197,25 @@ The repository is organized into independent Snakemake workflows and supporting 
 | Directory | Description |
 |-----------|-------------|
 | `general_configs/` | General configuration files shared across workflows, including machine learning hyperparameters and random seed definitions. |
-| `notebooks_and_scripts/` | Utility notebooks and scripts used for data preparation, preprocessing, and workflow execution. |
+| `notebooks_and_scripts/` | Notebooks and scripts used for source parsing, preprocessing, workflow support, figure generation, and downstream analyses. |
+| `notebooks_and_scripts/analysed_training/` | Training-result aggregation, exploratory performance analysis, and paired methodological delta analyses. |
+| `notebooks_and_scripts/figures/` | Figure-generation scripts and lightweight figure-ready data for Figures 2D, 3, and 4. |
+| `notebooks_and_scripts/matched_size_mmseqs2/` | Threshold search and cluster-comparison scripts for the matched-retention MMseqs2 benchmark. |
+| `notebooks_and_scripts/train_test_similarity/` | Scripts for the Figure 4A train--test similarity example and the representation-specific split-geometry analysis. |
 | `pipelines/` | Independent Snakemake workflows that define each stage of the pipeline. |
 | `pipelines/data/` | Input datasets used by the workflows. |
+| `src/building_models/` | Reusable Python functions for data extraction, representation, scaling, redundancy summaries, and training-result analysis. |
 | `numerical_representation_data/` | Generated numerical sequence representations and representation analyses. |
 | `reduced_distance/` | Distance-based reduced datasets. |
 | `reduced_homology/` | Homology-reduced datasets. |
-| `reduced_descriptor/` | Descriptor-based reduced datasets. |
+| `reduced_descriptor/` | One-hot datasets reduced using Euclidean distance between flattened, unscaled binary representations. |
 | `reduction_analysis/` | Summary files and analyses generated during dataset reduction. |
 | `split_process/` | Generated train, validation, and test partitions. |
 | `training_process/` | Machine learning training results and experiment outputs. |
+| `train_test_similarity/` | Fold-, seed-, representation-, and reduction-level train--test similarity diagnostics. |
+| `matched_retention_mmseqs2_benchmark/` | Matched-retention datasets, threshold-search records, cluster assignments, and agreement metrics relative to MMseqs2. |
 
-The `pipelines/` folder contains the reproducible Snakemake workflows. The `notebooks_and_scripts/` folder contains preprocessing notebooks and reusable scripts called by the workflows.
+The `pipelines/` folder contains the reproducible Snakemake workflows. The `notebooks_and_scripts/` folder contains preprocessing notebooks, reusable scripts, and downstream analyses. Generated result directories may be stored in the repository or distributed through the associated Zenodo archive, depending on file size.
 
 ---
 
@@ -226,7 +250,7 @@ The Python package `building_models` and its required dependencies can be instal
 
 # Installation
 
-## 1. Clone the repository:
+## 1. Clone the repository
 
 ```bash
 git clone https://github.com/kren-ai-lab/protein_ml_decision_analysis.git
@@ -234,18 +258,19 @@ git clone https://github.com/kren-ai-lab/protein_ml_decision_analysis.git
 cd protein_ml_decision_analysis
 ```
 
-## 2. Create a virtual environment (recommended):
+## 2. Create and activate a Conda environment
 
 ```bash
-python -m venv .venv
+conda create \
+    --name protein_ml_decision_analysis \
+    python=3.11 \
+    -y
 ```
 
-Activate it.
-
-Linux/macOS
+Activate the environment
 
 ```bash
-source .venv/bin/activate
+conda activate protein_ml_decision_analysis
 ```
 
 ## 3. Install the Python Package
@@ -254,7 +279,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## 4. Verify the installation:
+## 4. Verify the installation
 
 ```bash
 python -c "import building_models"
@@ -310,6 +335,8 @@ If the workflow graph is generated without errors, the installation is complete.
 ## Input dataset
 
 The workflows require a processed protein or peptide sequence dataset as input.
+
+For the antioxidant protein case study, `pipelines/data/sequences.csv` contains the processed sequence dataset used by the core workflows. The additional `sequences_full_consensus.csv`, `sequences_single_source.csv`, `sequences_multi_source.csv`, and `sequences_high_support.csv` files contain the source-support subsets used in the corresponding sensitivity analysis.
 
 Input datasets must be provided as a CSV file and placed in:
 
@@ -440,11 +467,11 @@ Each workflow can also be executed independently if the required input files gen
 
 # Workflow Description
 
-The repository is organized into four independent workflows that together implement the complete machine learning pipeline.
+The repository is organised into four independent workflows that together implement the complete machine learning pipeline.
 
 Although the workflows are typically executed sequentially, each workflow can be executed independently provided that its required input files are available.
 
-The following sections summarize the purpose, inputs, outputs, and supported methods of each workflow.
+The following sections summarise the purpose, inputs, outputs, and supported methods of each workflow.
 
 ## 1. Numerical representations
 
@@ -483,11 +510,11 @@ The `reduce_dataset` workflow generates reduced datasets from the numerical repr
 
 Three complementary reduction strategies are currently supported:
 
-| Reduction type | Output folder |
-|---|---|
-| Embedding-distance reduction | `reduced_distance/<dataset>/` |
-| Homology reduction | `reduced_homology/<dataset>/` |
-| One-hot descriptor reduction | `reduced_descriptor/<dataset>/` |
+| Reduction type | Proximity criterion | Output folder |
+|---|---|---|
+| Protein language model distance reduction | Cosine similarity | `reduced_distance/<dataset>/` |
+| Homology reduction | MMseqs2 sequence identity | `reduced_homology/<dataset>/` |
+| One-hot distance reduction | Euclidean distance between flattened, unscaled binary matrices | `reduced_descriptor/<dataset>/` |
 
 ### Required Input
 
@@ -506,7 +533,7 @@ reduced_descriptor/<dataset>/
 reduction_analysis/<dataset>/
 ```
 
-Distance-based reductions require numerical representation analysis outputs, such as percentile tables and `training_embeddings.npy`. Homology reduction uses sequence similarity, usually through MMseqs2/BioSieve.
+Distance-based reductions require numerical representation analysis outputs, such as percentile tables and `training_embeddings.npy`. Protein language model reductions use cosine similarity. For the one-hot baseline, zero-padded binary matrices are flattened and compared using Euclidean distance without feature scaling. Homology reduction uses sequence identity through MMseqs2/BioSieve.
 
 More details are available in:
 
@@ -534,6 +561,8 @@ The workflow currently supports:
 
 Each partitioning strategy can be combined with different dataset reduction strategies and numerical sequence representations.
 
+Distance-aware partitioning uses the proximity metric associated with the active representation. Cosine distance is used for protein language model embeddings, whereas Euclidean distance between flattened, unscaled binary vectors is used for one-hot representations. Cosine similarity may additionally be calculated for one-hot encoding as a descriptive cross-representation diagnostic, but it is not used to construct the one-hot redundancy reductions or distance-aware partitions.
+
 ### Required Input
 
 The workflow accepts:
@@ -541,7 +570,7 @@ The workflow accepts:
 - non-reduced datasets;
 - embedding-distance reduced datasets;
 - homology-reduced datasets;
-- descriptor-based reduced datasets.
+- one-hot datasets reduced using Euclidean distance.
 
 Depending on the workflow configuration, one or more numerical sequence representations may also be used during partition generation.
 
@@ -560,7 +589,7 @@ Typical outputs include:
 - partition validation results;
 - workflow logs.
 
-Each generated partition is summarized in a `split_summary.csv` file.
+Each generated partition is summarised in a `split_summary.csv` file.
 
 The `reduction_levels` column identifies the reduction strategy associated with each generated partition.
 
@@ -625,7 +654,7 @@ Training results are generated in:
 training_process/<dataset>/
 ```
 
-A typical output directory is organized as:
+A typical output directory is organised as:
 
 ```text
 training_process/
@@ -640,13 +669,39 @@ training_process/
                         └── training_done_scaler_<scaler>.txt
 ```
 
-The current automated workflow focuses on classic supervised machine learning through `training_model_external_cv.py`. The repository can be extended to other modeling strategies, such as deep learning architectures or fine-tuning approaches, if corresponding training scripts are added.
+The current automated workflow focuses on classical supervised machine learning through `training_model_external_cv.py`. The repository can be extended to other modelling strategies, such as deep learning architectures or fine-tuning approaches, if corresponding training scripts are added.
 
 More details are available in:
 
 ```text
 pipelines/training_process/README.md
 ```
+
+---
+
+# Study-specific Downstream Analyses
+
+In addition to the four core Snakemake workflows, the repository contains the downstream analyses used to evaluate how source support, representation geometry, redundancy control, and partitioning strategy affect the antioxidant protein classification case study.
+
+| Analysis | Code | Main outputs |
+|---|---|---|
+| Source-support analysis | `notebooks_and_scripts/source_support_analysis/` and `notebooks_and_scripts/figures/fig2_D/` | Source-support subsets, seed-level performance aggregates, and Figure 2D. |
+| Representation-space and reduction analyses | `notebooks_and_scripts/scripts_for_pipelines/` and `notebooks_and_scripts/figures/fig3/` | Similarity distributions, projection coordinates, reduction summaries, and Figure 3. |
+| Train--test similarity analysis | `notebooks_and_scripts/train_test_similarity/` | Fold- and seed-level nearest-neighbour similarity summaries used for Figure 4A and the representation-specific train--test geometry analysis. |
+| Matched-retention benchmark | `notebooks_and_scripts/matched_size_mmseqs2/` | Representation-specific reductions matched to the MMseqs2 retained size and cluster-agreement summaries. |
+| Training-result aggregation | `notebooks_and_scripts/analysed_training/` | Aggregated performance tables and paired methodological delta analyses. |
+
+## Train--test similarity diagnostics
+
+`calc_train_test_similarity.py` reproduces the train--test similarity calculation used for the unreduced ProtT5-XL example shown in Figure 4A. `compare_split_geometry_all_spaces.py` performs the complementary representation-specific comparison between matched random and distance-aware partitions across the available protein language model reduction levels. For each sequence in a test subset, the analysis calculates its maximum cosine similarity to the corresponding training subset and aggregates the resulting fold-level values by seed. Complete outputs are stored under `train_test_similarity/`.
+
+The representation-specific cosine analysis includes Ankh2-ext1, ESM2-8M, ESMC-300M, Mistral-Prot, ProtBERT, and ProtT5-XL. One-hot is not pooled into this comparison because its operational distance-aware partitions are constructed using Euclidean rather than cosine distance.
+
+## Matched-retention structural benchmark
+
+The matched-retention analysis uses the 2,948 representatives retained by MMseqs2 at 30% minimum sequence identity and 0.8 coverage as its reference target. Representation-specific thresholds are selected exclusively by retained dataset size within a tolerance of ±15 sequences. The resulting group assignments are then compared with MMseqs2 using adjusted Rand index, normalised mutual information, pairwise precision, recall, F1-score and Jaccard index, and representative-set Jaccard overlap. This structural analysis does not include model training.
+
+The search procedure is implemented by `find_matched_reductions.py`, and the final redundancy groups are compared with MMseqs2 using `compare_clusters_to_mmseqs2.py`. Generated outputs are stored under `matched_retention_mmseqs2_benchmark/n2948/`.
 
 ---
 
@@ -694,7 +749,7 @@ general_configs/config_hyperparameters_algorithm.json
 Random seeds are defined in:
 
 ```text
-general_configs/random_seeds_n.csv
+general_configs/random_seeds_30.csv
 ```
 
 These configuration files are shared across the workflows whenever applicable.
@@ -703,7 +758,7 @@ These configuration files are shared across the workflows whenever applicable.
 
 ## Output Directories
 
-Workflow outputs are organized according to the directory structure specified in the configuration files.
+Workflow outputs are organised according to the directory structure specified in the configuration files.
 
 Whenever possible, relative paths should be preferred over user-specific absolute paths.
 
@@ -727,12 +782,12 @@ Using relative paths improves workflow portability across different computing en
 
 | Configuration File | Purpose |
 |-------------------|---------|
-| `numerical_representations/config.yaml` | Representation generation settings |
-| `reduce_dataset/config.yaml` | Dataset reduction settings |
-| `split_dataset/config.yaml` | Dataset partitioning settings |
-| `training_process/config.yaml` | Model training settings |
-| `config_hyperparameters_algorithm.json` | Machine learning hyperparameters |
-| `random_seeds_n.csv` | Random seed definitions |
+| `pipelines/numerical_representations/config/config.yaml` | Representation generation settings |
+| `pipelines/reduce_dataset/config/config.yaml` | Dataset reduction settings |
+| `pipelines/split_dataset/config/config.yaml` | Dataset partitioning settings |
+| `pipelines/training_process/config/config.yaml` | Model-training settings |
+| `general_configs/config_hyperparameters_algorithm.json` | Machine learning hyperparameters |
+| `general_configs/random_seeds_30.csv` | The 30 predefined data-partition seeds |
 
 ---
 
@@ -740,17 +795,19 @@ Using relative paths improves workflow portability across different computing en
 
 Each workflow generates its outputs in dedicated directories at the project root. Intermediate results are preserved to facilitate reproducibility and allow downstream workflows to reuse previously generated artefacts.
 
-The main output directories are summarized below.
+The main output directories are summarised below.
 
 | Directory | Description |
 |-----------|-------------|
 | `numerical_representation_data/` | Numerical sequence representations and representation-space analyses. |
 | `reduced_distance/` | Datasets generated using embedding-distance reduction. |
 | `reduced_homology/` | Datasets generated using homology-based reduction. |
-| `reduced_descriptor/` | Datasets generated using descriptor-based reduction. |
+| `reduced_descriptor/` | One-hot datasets reduced using Euclidean distance between flattened, unscaled binary representations. |
 | `reduction_analysis/` | Reduction summaries and diagnostic analyses. |
 | `split_process/` | Generated train, validation, and test partitions. |
 | `training_process/` | Machine learning training results, performance metrics, and execution logs. |
+| `train_test_similarity/` | Fold-, seed-, representation-, and reduction-level train--test similarity diagnostics. |
+| `matched_retention_mmseqs2_benchmark/` | Matched-retention datasets, threshold-search records, cluster assignments, and agreement metrics relative to MMseqs2. |
 
 ---
 
@@ -761,12 +818,14 @@ The complete workflow generates different types of artefacts, including:
 - numerical sequence representations;
 - reduced datasets;
 - train, validation, and test partitions;
-- trained machine learning models;
+- model-training outputs;
 - performance metrics;
 - workflow logs;
 - diagnostic summaries.
 
 These outputs are preserved after workflow execution and can be reused by downstream workflows without repeating previous computational steps.
+
+Scripts, workflow definitions, configurations, summary tables, and lightweight diagnostic outputs are retained in the repository. Larger intermediate datasets and complete generated outputs associated with the released analyses are provided through the archived research materials at [https://doi.org/10.5281/zenodo.21709987](https://doi.org/10.5281/zenodo.21709987).
 
 ---
 
@@ -811,7 +870,7 @@ Each workflow defines explicit input and output files, allowing individual stage
 
 ## Configuration Tracking
 
-Workflow behavior is controlled through explicit configuration files.
+Workflow behaviour is controlled through explicit configuration files.
 
 Configuration parameters, including datasets, numerical representations, redundancy reduction strategies, partitioning methods, machine learning algorithms, and hyperparameters, are stored independently of the workflow implementation.
 
@@ -821,10 +880,10 @@ This design allows experimental configurations to be reproduced without modifyin
 
 ## Random Seeds
 
-Randomized analyses are controlled using predefined random seeds stored in:
+Randomised analyses are controlled using predefined random seeds stored in:
 
 ```text
-general_configs/random_seeds_n.csv
+general_configs/random_seeds_30.csv
 ```
 
 Using the same workflow configuration and random seeds allows experiments to be reproduced under identical execution conditions.
@@ -841,7 +900,7 @@ These artefacts include:
 - numerical representations;
 - reduced datasets;
 - dataset partitions;
-- trained models;
+- model-training outputs;
 - performance metrics;
 - diagnostic summaries.
 
@@ -891,7 +950,7 @@ If you use this workflow in your research, please cite the associated publicatio
 
 ## Software
 
-Soto-Garcia, N., Murillo-Acevedo, N., García-Vinuesa, J. A., Islas-Ávila, A. L., Davari, D. M., Murgas-Saavedra, L., Hassanin, A., Oróstica, K., González-Puelma, J., Navarrete, M., Martinez Rebollar, A., Uribe-Paredes, R., Cadet, F., & Medina-Ortiz, D. (2026). *Data-Centric Evaluation of Protein Function Prediction Pipelines* (Version 0.1.0). Zenodo. https://doi.org/10.5281/zenodo.21709987
+Soto-García, N., Murillo-Acevedo, N., García-Vinuesa, J. A., Islas-Ávila, A. L., Davari, M. D., Murgas-Saavedra, L., Hassanin, A., Oróstica, K., González-Puelma, J., Navarrete, M., Martínez-Rebollar, A., Uribe-Paredes, R., Cadet, F., & Medina-Ortiz, D. (2026). *Data-Centric Evaluation of Protein Function Prediction Pipelines* (Version 0.1.0). Zenodo. https://doi.org/10.5281/zenodo.21709987
 
 
 # License
