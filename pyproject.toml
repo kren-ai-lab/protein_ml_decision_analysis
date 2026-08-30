@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "building_models"
-version = "0.0.1"
+version = "0.2.0"
 description = "Implemented library for preparing, processing, training, and applying predictive models for protein science."
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<4.0"
 license = { file = "LICENSE" }
 
 authors = [
@@ -43,18 +43,24 @@ keywords = [
 ]
 
 dependencies = [
-    "pandas",
-    "tqdm",
-    "requests",
-    "rcsb-api",
+    "numpy==2.4.6",
+    "pandas==3.0.2",
+    "scipy==1.17.1",
+    "scikit-learn==1.8.0",
+    "xgboost==3.2.0",
+    "matplotlib==3.10.8",
+    "snakemake==9.19.0",
+    "sylphy[all]==0.2.0",
+    "biosieve==0.1.0",
     "biopython==1.82",
+    "tqdm==4.70.0",
+    "requests==2.34.2",
+    "rcsb-api==1.7.3",
     "python-dotenv",
-    "pyyaml",
+    "pyyaml==6.0.3",
     "typer",
-    "sylphy[all]",
-    "biosieve @ git+https://github.com/kren-ai-lab/biosieve.git@main",
-    "openpyxl",
-    "seaborn"
+    "openpyxl==3.1.5",
+    "seaborn==0.13.2",
 ]
 
 [project.urls]
