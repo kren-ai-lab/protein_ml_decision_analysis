@@ -1,29 +1,17 @@
 #!/usr/bin/env python3
-"""Create Figure 2D from source-support model-evaluation results.
+"""Create a source-support performance figure from model-evaluation results.
 
-For each source-support subset and split strategy, the script computes:
+For every source-support subset and split strategy, the script reports mean
+MCC, seed-level standard deviation, standard error, a two-sided 95% confidence
+interval, evaluation counts, seed counts, and matched-unit counts. Model-level
+evaluations are averaged within each seed before uncertainty is calculated
+across independent seed-level means.
 
-    mean MCC, seed-level SD, seed-level SE, seed-level 95% CI,
-    n evaluations, n seeds, n matched evaluation units
+Input may be supplied as Excel, CSV, TSV, or tab-separated text. Flexible
+column aliases and metric/value long tables are supported. By default, only
+evaluation units present in every expected subset-by-split cell are retained.
 
-Point estimates and confidence intervals are calculated from seed-level means.
-Within each seed, the available representation-algorithm evaluations are
-averaged first.
-
-Expected raw information, with flexible column aliases:
-    subset/source_support/training_subset
-    split_type/splitting_strategy/split
-    representation/numerical_representation/rep
-    algorithm/model_name/classifier
-    seed/random_seed/split_seed
-    mcc/MCC/test_mcc OR metric/value long format with metric == mcc
-
-Example:
-    python make_figure_D.py training_results_source_support.xlsx \
-        --sheet figure_input
-
-If the Excel file contains multiple sheets and you do not know the raw sheet name, run:
-    python make_figure_D.py training_results_source_support.xlsx --list_sheets
+Run ``python make_figure_D.py --help`` for command-line usage.
 """
 
 from __future__ import annotations
@@ -31,17 +19,21 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-# =========================
-# DEFAULT SETTINGS
-# =========================
+# -----------------------------------------------------------------------------
+# Plot and input defaults
+# -----------------------------------------------------------------------------
+
+SCRIPT_VERSION = "1.0"
 DEFAULT_INPUT_FILE = "training_results_source_support.xlsx"
 DEFAULT_SHEET = "figure_input"
 
@@ -75,7 +67,11 @@ COLUMN_ALIASES = {
         "dataset_subset", "source_support", "support_level", "subset_name",
     ],
     "split_type": [
-        "split_type", "split", "splitting_strategy", "partition", "partitioning_strategy",
+        "split_type",
+        "split",
+        "splitting_strategy",
+        "partition",
+        "partitioning_strategy",
     ],
     "representation": [
         "representation", "numerical_representation", "rep", "input_representation",
@@ -100,15 +96,37 @@ COLUMN_ALIASES = {
 }
 
 OPTIONAL_CONFIG_ALIASES = [
-    "config", "config_id", "variant", "variant_index", "params_id", "hyperparameter_config",
+    "config",
+    "config_id",
+    "variant",
+    "variant_index",
+    "params_id",
+    "hyperparameter_config",
 ]
 
 
 def normalize_text(value: object) -> str:
+    """Normalize a label for case-insensitive categorical matching.
+
+    Args:
+        value: Arbitrary label value.
+
+    Returns:
+        A stripped lowercase string using hyphens as separators.
+    """
     return str(value).strip().lower().replace("_", "-").replace(" ", "-")
 
 
 def normalize_split_name(split_name: object) -> str:
+    """Map supported split aliases to canonical names.
+
+    Args:
+        split_name: Source split-strategy label.
+
+    Returns:
+        ``random``, ``stratified``, or ``distance-aware`` for known aliases;
+        otherwise the normalized source label.
+    """
     s = normalize_text(split_name)
     if s in {"random", "random-split", "random-kfold"}:
         return "random"
@@ -123,6 +141,15 @@ def normalize_split_name(split_name: object) -> str:
 
 
 def normalize_subset_name(subset_name: object) -> str:
+    """Map supported source-support subset aliases to canonical names.
+
+    Args:
+        subset_name: Source subset label.
+
+    Returns:
+        A canonical subset name for known aliases, otherwise the normalized
+        source label.
+    """
     s = normalize_text(subset_name)
     mapping = {
         "single": "single-source",
@@ -148,6 +175,18 @@ def normalize_subset_name(subset_name: object) -> str:
 
 
 def find_column(df: pd.DataFrame, logical_name: str) -> str:
+    """Resolve a required logical field from its accepted aliases.
+
+    Args:
+        df: Source result table.
+        logical_name: Key in ``COLUMN_ALIASES``.
+
+    Returns:
+        The matching original column name.
+
+    Raises:
+        ValueError: If none of the accepted aliases is present.
+    """
     aliases = COLUMN_ALIASES[logical_name]
     lower_to_original = {c.lower(): c for c in df.columns}
     for alias in aliases:
@@ -160,19 +199,43 @@ def find_column(df: pd.DataFrame, logical_name: str) -> str:
 
 
 def maybe_convert_long_metric_format(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert metric/value long format to a table with an mcc column, when needed."""
+    """Convert a metric/value long table to an MCC result table when needed.
+
+    Args:
+        df: Input result table.
+
+    Returns:
+        The original table when an MCC column already exists or no long-format
+        fields are detected. Otherwise, an MCC-only copy with a canonical
+        ``mcc`` column.
+
+    Raises:
+        ValueError: If long format is detected but contains no MCC rows.
+    """
     cols_lower = {c.lower(): c for c in df.columns}
     has_mcc_col = any(alias.lower() in cols_lower for alias in COLUMN_ALIASES["mcc"])
     if has_mcc_col:
         return df
 
     metric_col = cols_lower.get("metric") or cols_lower.get("metric_name")
-    value_col = cols_lower.get("value") or cols_lower.get("metric_value") or cols_lower.get("score")
+    value_col = (
+        cols_lower.get("value")
+        or cols_lower.get("metric_value")
+        or cols_lower.get("score")
+    )
     if metric_col and value_col:
         out = df.copy()
-        out = out[out[metric_col].astype(str).str.lower().str.contains("mcc|matthews", regex=True)].copy()
+        metric_mask = (
+            out[metric_col]
+            .astype(str)
+            .str.lower()
+            .str.contains("mcc|matthews", regex=True)
+        )
+        out = out.loc[metric_mask].copy()
         if out.empty:
-            raise ValueError("Metric/value format was detected, but no MCC rows were found.")
+            raise ValueError(
+                "Metric/value format was detected, but no MCC rows were found."
+            )
         out["mcc"] = pd.to_numeric(out[value_col], errors="coerce")
         return out
 
@@ -180,16 +243,30 @@ def maybe_convert_long_metric_format(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def filter_test_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep test/final evaluation rows when a scenario/stage column exists."""
+    """Keep test rows when an evaluation-stage column identifies them.
+
+    Args:
+        df: Input result table.
+
+    Returns:
+        A filtered copy when a recognized stage column contains test labels;
+        otherwise the original table.
+    """
     scenario_candidates = [
-        "scenario", "stage", "evaluation_stage", "evaluation", "set", "dataset", "eval_set",
+        "scenario",
+        "stage",
+        "evaluation_stage",
+        "evaluation",
+        "set",
+        "dataset",
+        "eval_set",
     ]
     lower_to_original = {c.lower(): c for c in df.columns}
     for candidate in scenario_candidates:
         if candidate in lower_to_original:
             col = lower_to_original[candidate]
             values = df[col].astype(str).str.lower()
-            # Keep rows that are clearly final test rows.
+            # Filter only when the column contains an explicit test label.
             mask = values.str.contains("test", regex=False)
             if mask.any():
                 return df[mask].copy()
@@ -197,6 +274,17 @@ def filter_test_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_raw_sheet(path: Path) -> str:
+    """Select the Excel sheet with the strongest input-schema match.
+
+    Args:
+        path: Excel workbook path.
+
+    Returns:
+        The name of the highest-scoring candidate sheet.
+
+    Raises:
+        ValueError: If no sheet contains enough recognized columns.
+    """
     xls = pd.ExcelFile(path)
     best_sheet = None
     best_score = -1
@@ -210,7 +298,11 @@ def detect_raw_sheet(path: Path) -> str:
         for aliases in COLUMN_ALIASES.values():
             if any(alias.lower() in cols for alias in aliases):
                 score += 1
-        if {"metric", "value"}.issubset(cols) or {"metric_name", "metric_value"}.issubset(cols):
+        is_long_format = {"metric", "value"}.issubset(cols) or {
+            "metric_name",
+            "metric_value",
+        }.issubset(cols)
+        if is_long_format:
             score += 1
         if score > best_score:
             best_score = score
@@ -226,6 +318,16 @@ def detect_raw_sheet(path: Path) -> str:
 
 
 def ci95(values: pd.Series) -> float:
+    """Calculate a two-sided 95% confidence-interval half-width.
+
+    Args:
+        values: Independent numeric observations.
+
+    Returns:
+        The interval half-width based on Student's t distribution when SciPy is
+        available, the normal approximation otherwise, or ``NaN`` when fewer
+        than two valid observations are present.
+    """
     values = pd.to_numeric(values, errors="coerce").dropna()
     n = len(values)
     if n <= 1:
@@ -240,11 +342,20 @@ def ci95(values: pd.Series) -> float:
 
 
 def summarize_group(group: pd.DataFrame) -> pd.Series:
+    """Summarize one subset-by-split group using seed-level means.
+
+    Args:
+        group: Canonical result rows from one subset and split strategy.
+
+    Returns:
+        Mean MCC, uncertainty statistics, and coverage counts. Independent
+        observations for uncertainty estimation are seed-level means.
+    """
     values = pd.to_numeric(group["mcc"], errors="coerce")
     valid = group.loc[values.notna(), ["seed"]].copy()
     valid["mcc"] = values.loc[values.notna()].astype(float).to_numpy()
 
-    # The seed is the independent repetition. Average the model-level units
+    # Treat seeds as independent repetitions by averaging model-level units
     # within each seed before calculating uncertainty.
     seed_values = valid.groupby("seed", dropna=False)["mcc"].mean()
     n_evaluations = int(valid.shape[0])
@@ -258,17 +369,36 @@ def summarize_group(group: pd.DataFrame) -> pd.Series:
         "ci95_mcc": ci95(seed_values),
         "n_evaluations": n_evaluations,
         "n_seeds": n_seeds,
-        "n_representations": group["representation"].nunique() if "representation" in group else np.nan,
-        "n_algorithms": group["algorithm"].nunique() if "algorithm" in group else np.nan,
-        "n_evaluation_units": group["evaluation_unit"].nunique() if "evaluation_unit" in group else np.nan,
+        "n_representations": (
+            group["representation"].nunique()
+            if "representation" in group
+            else np.nan
+        ),
+        "n_algorithms": (
+            group["algorithm"].nunique() if "algorithm" in group else np.nan
+        ),
+        "n_evaluation_units": (
+            group["evaluation_unit"].nunique()
+            if "evaluation_unit" in group
+            else np.nan
+        ),
     })
 
 
 def build_evaluation_unit(df: pd.DataFrame) -> pd.DataFrame:
+    """Construct a stable identifier for matched evaluation units.
+
+    Args:
+        df: Canonical result table.
+
+    Returns:
+        A copy containing ``evaluation_unit``, built from representation,
+        algorithm, optional configuration identifiers, and seed.
+    """
     df = df.copy()
     unit_cols = ["representation", "algorithm"]
 
-    # Include hyperparameter/config identifiers if the raw table has them.
+    # Preserve available configuration identifiers in the matching key.
     lower_to_original = {c.lower(): c for c in df.columns}
     for alias in OPTIONAL_CONFIG_ALIASES:
         if alias.lower() in lower_to_original:
@@ -276,7 +406,7 @@ def build_evaluation_unit(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].astype(str)
             unit_cols.append(col)
 
-    # Include seed so the matched analysis uses the same seed-level runs across all cells.
+    # Include seed so matching compares the same repetitions across cells.
     if "seed" in df.columns:
         unit_cols.append("seed")
 
@@ -285,25 +415,57 @@ def build_evaluation_unit(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def keep_complete_units(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only evaluation units present in all expected subset x split cells."""
-    expected_cells = set((subset, split) for subset in EXPECTED_SUBSETS for split in EXPECTED_SPLITS)
+    """Keep evaluation units present in every expected subset-by-split cell.
+
+    Args:
+        df: Canonical result table containing ``evaluation_unit``.
+
+    Returns:
+        A filtered copy containing complete matched units only.
+
+    Raises:
+        ValueError: If no evaluation unit covers the complete expected matrix.
+    """
+    expected_cells = {
+        (subset, split)
+        for subset in EXPECTED_SUBSETS
+        for split in EXPECTED_SPLITS
+    }
 
     unit_cells = (
         df.groupby("evaluation_unit")[["subset", "split_type"]]
         .apply(lambda g: set(zip(g["subset"], g["split_type"])))
     )
-    complete_units = [unit for unit, cells in unit_cells.items() if expected_cells.issubset(cells)]
+    complete_units = [
+        unit
+        for unit, cells in unit_cells.items()
+        if expected_cells.issubset(cells)
+    ]
 
     if not complete_units:
         raise ValueError(
-            "No complete matched evaluation units were found across all 4 subsets x 3 split strategies.\n"
-            "Run again with --allow_unmatched to compute statistics using all available valid rows."
+            "No complete matched evaluation units were found across every "
+            "expected subset-by-split cell.\nRun again with --allow-unmatched "
+            "to compute statistics using all available valid rows."
         )
 
     return df[df["evaluation_unit"].isin(complete_units)].copy()
 
 
 def read_raw_results(input_file: Path, sheet: str | None) -> pd.DataFrame:
+    """Read model-evaluation results from a supported tabular format.
+
+    Args:
+        input_file: Excel, CSV, TSV, or tab-separated text file.
+        sheet: Excel worksheet name. ``None`` enables automatic detection.
+
+    Returns:
+        The loaded result table.
+
+    Raises:
+        ValueError: If the file extension is unsupported or a worksheet cannot
+        be detected.
+    """
     if input_file.suffix.lower() in {".xlsx", ".xls"}:
         if sheet is None:
             sheet = detect_raw_sheet(input_file)
@@ -318,32 +480,97 @@ def read_raw_results(input_file: Path, sheet: str | None) -> pd.DataFrame:
     return df
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input_file", nargs="?", default=DEFAULT_INPUT_FILE)
-    parser.add_argument("--sheet", default=DEFAULT_SHEET)
-    parser.add_argument("--list_sheets", action="store_true")
-    parser.add_argument("--representation", default=None, help="Optional representation filter")
-    parser.add_argument("--algorithm", default=None, help="Optional algorithm filter")
+def build_parser() -> argparse.ArgumentParser:
+    """Create the command-line parser for figure generation.
+
+    Returns:
+        A configured parser describing supported inputs, filters, count checks,
+        and output options.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Summarize source-support model evaluations using seed-level "
+            "confidence intervals and generate CSV, PNG, and PDF outputs."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
-        "--allow_unmatched",
+        "input_file",
+        nargs="?",
+        default=DEFAULT_INPUT_FILE,
+        help="Input Excel, CSV, TSV, or tab-separated text file.",
+    )
+    parser.add_argument(
+        "--sheet",
+        default=DEFAULT_SHEET,
+        help="Excel worksheet containing plot-ready or raw result rows.",
+    )
+    parser.add_argument(
+        "--list-sheets",
+        "--list_sheets",
+        dest="list_sheets",
         action="store_true",
-        help="Use all available rows instead of keeping only complete matched units across all cells.",
+        help="List Excel worksheets and exit without generating outputs.",
     )
     parser.add_argument(
+        "--representation",
+        default=None,
+        help="Keep only rows with this exact representation label.",
+    )
+    parser.add_argument(
+        "--algorithm",
+        default=None,
+        help="Keep only rows with this exact algorithm label.",
+    )
+    parser.add_argument(
+        "--allow-unmatched",
+        "--allow_unmatched",
+        dest="allow_unmatched",
+        action="store_true",
+        help=(
+            "Use all valid rows instead of retaining only evaluation units "
+            "present in every subset-by-split cell."
+        ),
+    )
+    parser.add_argument(
+        "--expected-evaluations",
         "--expected_evaluations",
+        dest="expected_evaluations",
         type=int,
         default=None,
-        help="Optional expected number of evaluation units per subset/split cell.",
+        help="Required evaluation-row count in every subset-by-split cell.",
     )
     parser.add_argument(
+        "--expected-seeds",
         "--expected_seeds",
+        dest="expected_seeds",
         type=int,
         default=None,
-        help="Optional expected number of seeds per subset/split cell.",
+        help="Required seed count in every subset-by-split cell.",
     )
-    parser.add_argument("--output_prefix", default=OUTPUT_PREFIX)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--output-prefix",
+        "--output_prefix",
+        dest="output_prefix",
+        default=OUTPUT_PREFIX,
+        help="Output path prefix; .csv, .png, and .pdf are added automatically.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {SCRIPT_VERSION}",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Parse arguments, summarize the input, and generate table and figure files.
+
+    Args:
+        argv: Optional argument sequence for programmatic invocation. ``None``
+            reads arguments from the process command line.
+    """
+    args = build_parser().parse_args(argv)
 
     print("Confidence-interval unit: seed-level means")
 
@@ -382,7 +609,16 @@ def main() -> None:
     df["subset"] = df["subset"].apply(normalize_subset_name)
     df["split_type"] = df["split_type"].apply(normalize_split_name)
     df["mcc"] = pd.to_numeric(df["mcc"], errors="coerce")
-    df = df.dropna(subset=["mcc", "subset", "split_type", "representation", "algorithm", "seed"])
+    df = df.dropna(
+        subset=[
+            "mcc",
+            "subset",
+            "split_type",
+            "representation",
+            "algorithm",
+            "seed",
+        ]
+    )
 
     df = df[df["subset"].isin(EXPECTED_SUBSETS)].copy()
     df = df[df["split_type"].isin(EXPECTED_SPLITS)].copy()
@@ -413,7 +649,10 @@ def main() -> None:
         before_units = df["evaluation_unit"].nunique()
         df = keep_complete_units(df)
         after_units = df["evaluation_unit"].nunique()
-        print(f"Complete matched evaluation units retained: {after_units}/{before_units}")
+        print(
+            "Complete matched evaluation units retained: "
+            f"{after_units}/{before_units}"
+        )
     else:
         print("Using all available valid rows; matched-unit filtering was disabled.")
 
@@ -432,8 +671,12 @@ def main() -> None:
     )
 
     # Guarantee a stable order in the output and plot.
-    summary["subset"] = pd.Categorical(summary["subset"], categories=EXPECTED_SUBSETS, ordered=True)
-    summary["split_type"] = pd.Categorical(summary["split_type"], categories=EXPECTED_SPLITS, ordered=True)
+    summary["subset"] = pd.Categorical(
+        summary["subset"], categories=EXPECTED_SUBSETS, ordered=True
+    )
+    summary["split_type"] = pd.Categorical(
+        summary["split_type"], categories=EXPECTED_SPLITS, ordered=True
+    )
     summary = summary.sort_values(["split_type", "subset"]).reset_index(drop=True)
 
     count_checks = pd.Series(False, index=summary.index)
@@ -448,7 +691,7 @@ def main() -> None:
     bad_counts = summary[count_checks]
     if requirements and not bad_counts.empty:
         raise ValueError(
-            "Unexpected Figure 2D input counts. Every subset/split cell must "
+            "Unexpected plot-input counts. Every subset/split cell must "
             f"contain {' and '.join(requirements)}. Problematic cells:\n"
             + bad_counts[
                 ["subset", "split_type", "n_evaluations", "n_seeds"]
@@ -457,7 +700,12 @@ def main() -> None:
 
     expected_rows = len(EXPECTED_SUBSETS) * len(EXPECTED_SPLITS)
     if summary.shape[0] != expected_rows:
-        observed = set(zip(summary["subset"].astype(str), summary["split_type"].astype(str)))
+        observed = set(
+            zip(
+                summary["subset"].astype(str),
+                summary["split_type"].astype(str),
+            )
+        )
         expected_cells = [
             (subset, split)
             for split in EXPECTED_SPLITS
@@ -475,9 +723,9 @@ def main() -> None:
     print("\nComputed values used in the plot:")
     print(summary.to_string(index=False))
 
-    # =========================
-    # PLOT
-    # =========================
+    # -------------------------------------------------------------------------
+    # Figure construction
+    # -------------------------------------------------------------------------
     x = np.arange(len(EXPECTED_SUBSETS), dtype=float)
     split_styles = {
         "random": {

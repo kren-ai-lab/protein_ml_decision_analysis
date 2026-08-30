@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Aggregate source-support model-training results.
+"""Aggregate model-training results across source-support subsets.
 
-This script follows the two-stage logic of ``aggregate_training_results.py``:
+The script discovers fold-level result files, validates their embedded
+metadata, and preserves aggregate statistics for every hyperparameter
+configuration. Within each cross-validation fold, it independently selects the
+configuration with the highest validation MCC and then summarizes the
+corresponding test metrics.
 
-Preserve fold-level results for every ``cfg_idx``.
-Report the mean MCC of the five fold-specific selections for each
-subset/split/representation/algorithm/seed unit.
+The resulting workbook contains configuration-level results, validation-based
+fold selections, plot-ready evaluation units, seed-level summaries,
+source-support summaries, and completeness audits. Test metrics are never used
+to select configurations.
 
-The test metric is never used for configuration selection. Configuration-level
-and fold-selection tables are retained in the output workbook. Both supported
-directory layouts are discovered automatically:
+Two result-directory layouts are supported below every seed directory::
 
-    seed_X/Algorithm/result.csv
-    seed_X/no_threshold/Algorithm/result.csv
+    <algorithm>/<result_file>.csv
+    no_threshold/<algorithm>/<result_file>.csv
+
+Run ``python aggregate_source_support_results.py --help`` for command-line
+usage.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -31,6 +37,8 @@ import pandas as pd
 
 SCRIPT_VERSION = "1.0"
 
+# Dataset-directory names associated with each normalized support subset.
+# Update this mapping when applying the workflow to a different directory tree.
 SUBSET_DIRS = {
     "full_consensus": "antioxidant_proteins",
     "single_source": "antioxidant_proteins_single_source",
@@ -75,6 +83,19 @@ FOLD_ALIASES = ("fold", "fold_idx", "fold_id", "cv_fold")
 
 @dataclass(frozen=True)
 class ExperimentFile:
+    """Metadata and path associated with one training-result file.
+
+    Attributes:
+        subset: Normalized source-support subset name.
+        representation: Numerical representation used for model input.
+        split_type: Dataset-partitioning strategy.
+        algorithm: Classifier or estimator name.
+        seed: Random seed extracted from the directory name.
+        scaler: Scaler identifier encoded in the result filename.
+        layout: Discovered directory layout variant.
+        path: Path to the result CSV.
+    """
+
     subset: str
     representation: str
     split_type: str
@@ -86,6 +107,11 @@ class ExperimentFile:
 
 
 def status(message: str) -> None:
+    """Print a status message and flush the stream immediately.
+
+    Args:
+        message: Text written to standard output.
+    """
     print(message, flush=True)
 
 
@@ -96,6 +122,21 @@ def find_column(
     required: bool,
     logical_name: str,
 ) -> str | None:
+    """Resolve a logical field from a collection of column aliases.
+
+    Args:
+        columns: Available source-column names.
+        aliases: Accepted aliases in priority order.
+        required: Raise an error when no alias is found.
+        logical_name: Human-readable field name used in error messages.
+
+    Returns:
+        The original source-column name, or ``None`` when the field is optional
+        and no alias is present.
+
+    Raises:
+        ValueError: If a required field cannot be resolved.
+    """
     lookup = {str(column).lower(): str(column) for column in columns}
     for alias in aliases:
         if alias.lower() in lookup:
@@ -109,6 +150,17 @@ def find_column(
 
 
 def parse_seed(path: Path) -> int:
+    """Extract an integer seed from a ``seed_<value>`` directory name.
+
+    Args:
+        path: Seed directory path.
+
+    Returns:
+        The parsed integer seed.
+
+    Raises:
+        ValueError: If the directory name does not follow the expected format.
+    """
     match = re.fullmatch(r"seed_(-?\d+)", path.name)
     if match is None:
         raise ValueError(f"Invalid seed directory: {path}")
@@ -122,7 +174,19 @@ def discover_files(
     splits: tuple[str, ...],
     scaler: str,
 ) -> tuple[list[ExperimentFile], list[str]]:
-    """Find only exact unreduced files for the requested experiment."""
+    """Discover unreduced result files for the requested experiment matrix.
+
+    Args:
+        input_root: Directory containing the configured dataset directories.
+        representations: Representation directory prefixes to include.
+        algorithms: Algorithm names encoded in paths and filenames.
+        splits: Split-strategy directory names to include.
+        scaler: Scaler identifier encoded in result filenames.
+
+    Returns:
+        A list of resolved experiment files and a list of discovery problems.
+        Missing or ambiguous paths are reported instead of silently ignored.
+    """
     discovered: list[ExperimentFile] = []
     problems: list[str] = []
 
@@ -199,6 +263,16 @@ def validate_embedded_metadata(
     dataframe: pd.DataFrame,
     experiment: ExperimentFile,
 ) -> None:
+    """Validate source columns against metadata inferred from the file path.
+
+    Args:
+        dataframe: Raw result table.
+        experiment: Metadata inferred during file discovery.
+
+    Raises:
+        ValueError: If an available metadata column contradicts the path-derived
+        value.
+    """
     expected = {
         "algorithm": experiment.algorithm,
         "partition_strategy": experiment.split_type,
@@ -231,7 +305,21 @@ def aggregate_file_by_configuration(
     experiment: ExperimentFile,
     metrics: tuple[str, ...],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return the cfg-level audit table and validation-selected fold rows."""
+    """Aggregate one result file and select configurations within each fold.
+
+    Args:
+        experiment: Metadata and path for one result CSV.
+        metrics: Metric columns to aggregate when available.
+
+    Returns:
+        A configuration-level aggregate and one validation-selected row per
+        fold. Selection uses ``mcc_val``; ``mcc_test`` is reported only after
+        selection.
+
+    Raises:
+        ValueError: If the file is empty, required fields or metrics are
+        missing, metadata is inconsistent, or no valid rows remain.
+    """
     dataframe = pd.read_csv(experiment.path, low_memory=False)
     if dataframe.empty:
         raise ValueError(f"Empty result file: {experiment.path}")
@@ -279,8 +367,9 @@ def aggregate_file_by_configuration(
             f"No rows with numeric mcc_val and mcc_test in {experiment.path}"
         )
 
-    # Select by validation MCC independently within each fold. cfg_idx is used
-    # only as a deterministic tie breaker; test MCC is not used for selection.
+    # Select independently within each fold using validation MCC. The
+    # configuration identifier provides a deterministic tie-break, while test
+    # MCC remains excluded from the selection rule.
     valid_for_selection["_cfg_numeric"] = pd.to_numeric(
         valid_for_selection["cfg_idx"], errors="coerce"
     )
@@ -341,7 +430,25 @@ def validate_configuration_table(
     expected_seed_count: int,
     allow_incomplete: bool,
 ) -> pd.DataFrame:
-    """Check cfg_idx preservation and equal configuration sets everywhere."""
+    """Validate configuration coverage across the experiment matrix.
+
+    Args:
+        by_configuration: Configuration-level aggregate.
+        representations: Expected representations.
+        algorithms: Expected algorithms.
+        splits: Expected split strategies.
+        expected_seed_count: Required number of seeds per subset and split.
+        allow_incomplete: Emit warnings instead of raising for completeness
+            failures.
+
+    Returns:
+        An audit table with observed and expected counts for every subset and
+        split cell.
+
+    Raises:
+        ValueError: If duplicate identities, inconsistent configuration sets,
+        or incomplete cells are found and ``allow_incomplete`` is false.
+    """
     unit_cols = [
         "subset",
         "split_type",
@@ -412,7 +519,10 @@ def validate_configuration_table(
             expected_config_rows = (
                 len(representations)
                 * expected_seed_count
-                * sum(len(expected_cfg_sets.get(algorithm, set())) for algorithm in algorithms)
+                * sum(
+                    len(expected_cfg_sets.get(algorithm, set()))
+                    for algorithm in algorithms
+                )
             )
             row = {
                 "subset": subset,
@@ -462,7 +572,26 @@ def validate_selected_fold_table(
     expected_scaler: str,
     allow_incomplete: bool,
 ) -> pd.DataFrame:
-    """Validate one validation-selected row per fold and model unit."""
+    """Validate validation-selected rows across folds and model units.
+
+    Args:
+        selected_by_fold: Table containing one selected configuration per fold.
+        representations: Expected representations.
+        algorithms: Expected algorithms.
+        splits: Expected split strategies.
+        expected_seed_count: Required number of seeds per subset and split.
+        expected_fold_count: Required folds per model unit.
+        expected_scaler: Scaler expected in every selected row.
+        allow_incomplete: Emit warnings instead of raising for completeness
+            failures.
+
+    Returns:
+        An audit table with fold, model-unit, seed, and scaler counts.
+
+    Raises:
+        ValueError: If duplicate selections or incomplete cells are found and
+        ``allow_incomplete`` is false.
+    """
     unit_cols = [
         "subset",
         "split_type",
@@ -544,7 +673,15 @@ def validate_selected_fold_table(
 
 
 def build_figure_input(selected_by_fold: pd.DataFrame) -> pd.DataFrame:
-    """Average the test MCC values selected by validation within each fold."""
+    """Build one plot-ready row per model unit and seed.
+
+    Args:
+        selected_by_fold: Validation-selected fold-level rows.
+
+    Returns:
+        A table containing mean test MCC across folds, selected validation MCC,
+        fold counts, and configuration-selection metadata.
+    """
     unit_cols = [
         "subset",
         "representation",
@@ -580,6 +717,26 @@ def validate_figure_input(
     expected_scaler: str,
     allow_incomplete: bool,
 ) -> pd.DataFrame:
+    """Validate plot-ready evaluation units across subsets and splits.
+
+    Args:
+        figure_input: Plot-ready model-unit table.
+        representations: Expected representations.
+        algorithms: Expected algorithms.
+        splits: Expected split strategies.
+        expected_seed_count: Required number of seeds per cell.
+        expected_scaler: Scaler required in every cell.
+        allow_incomplete: Emit warnings instead of raising for completeness
+            failures.
+
+    Returns:
+        An audit table with evaluation, seed, representation, algorithm, and
+        scaler counts.
+
+    Raises:
+        ValueError: If duplicate evaluation units are present, or if cells are
+        inconsistent and ``allow_incomplete`` is false.
+    """
     unit_cols = [
         "subset",
         "split_type",
@@ -592,7 +749,7 @@ def validate_figure_input(
     if duplicate_mask.any():
         examples = figure_input.loc[duplicate_mask, unit_cols].head(20)
         raise ValueError(
-            "Duplicated Figure 2D units:\n" + examples.to_string(index=False)
+            "Duplicated plot-input units:\n" + examples.to_string(index=False)
         )
 
     problems: list[str] = []
@@ -637,11 +794,11 @@ def validate_figure_input(
             )
             audit_rows.append(row)
             if row["status"] != "OK":
-                problems.append(f"Unbalanced Figure 2D cell: {row}")
+                problems.append(f"Unbalanced plot-input cell: {row}")
 
     audit = pd.DataFrame(audit_rows)
     if problems:
-        message = "Figure-input validation failed:\n  - " + "\n  - ".join(problems)
+        message = "Plot-input validation failed:\n  - " + "\n  - ".join(problems)
         if allow_incomplete:
             status(f"WARNING: {message}")
         else:
@@ -650,6 +807,16 @@ def validate_figure_input(
 
 
 def critical_t_95(n: int) -> float:
+    """Return the two-sided 95% critical value for a sample size.
+
+    Args:
+        n: Number of independent observations.
+
+    Returns:
+        Student's t critical value when SciPy is available, the normal
+        approximation otherwise, or ``NaN`` when fewer than two observations
+        are available.
+    """
     if n <= 1:
         return np.nan
     try:
@@ -663,6 +830,15 @@ def critical_t_95(n: int) -> float:
 def build_seed_and_support_summaries(
     figure_input: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate seed-level and source-support performance summaries.
+
+    Args:
+        figure_input: Plot-ready model-unit rows containing test MCC values.
+
+    Returns:
+        A seed-level table and a subset-by-split summary whose uncertainty is
+        calculated across seed-level means.
+    """
     seed_level = (
         figure_input.groupby(["subset", "split_type", "seed"], as_index=False)
         .agg(
@@ -704,12 +880,21 @@ def build_seed_and_support_summaries(
 
 
 def autosize(writer: pd.ExcelWriter, sheet_names: Iterable[str]) -> None:
+    """Apply filters, frozen headers, and bounded column widths to worksheets.
+
+    Args:
+        writer: Active pandas Excel writer using an openpyxl workbook.
+        sheet_names: Worksheet names to format.
+    """
     for sheet_name in sheet_names:
         worksheet = writer.sheets[sheet_name]
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
         for cells in worksheet.columns:
-            values = [str(cell.value) if cell.value is not None else "" for cell in cells]
+            values = [
+                str(cell.value) if cell.value is not None else ""
+                for cell in cells
+            ]
             width = min(max(max(map(len, values), default=0) + 2, 10), 55)
             worksheet.column_dimensions[cells[0].column_letter].width = width
 
@@ -727,6 +912,21 @@ def write_outputs(
     scaler: str,
     write_csv: bool,
 ) -> None:
+    """Write aggregate tables, audits, and methodological metadata.
+
+    Args:
+        output_xlsx: Destination Excel workbook.
+        by_configuration: Configuration-level metric aggregates.
+        selected_by_fold: Validation-selected rows for every fold.
+        figure_input: Plot-ready model-unit table.
+        seed_level: Seed-level MCC summaries.
+        support_summary: Subset-by-split performance summary.
+        audit_configs: Configuration-coverage audit.
+        audit_selected_folds: Fold-selection audit.
+        audit_figure: Plot-input coverage audit.
+        scaler: Scaler included in the analysis.
+        write_csv: Also export the principal tables as CSV files.
+    """
     output_xlsx.parent.mkdir(parents=True, exist_ok=True)
     method = pd.DataFrame(
         {
@@ -782,36 +982,55 @@ def write_outputs(
         figure_input.to_csv(figure_csv, index=False)
         status(f"Saved configuration-level CSV: {config_csv}")
         status(f"Saved fold-selection CSV: {selected_csv}")
-        status(f"Saved Figure 2D input CSV: {figure_csv}")
+        status(f"Saved plot-input CSV: {figure_csv}")
 
     status(f"Saved workbook: {output_xlsx}")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Create the command-line parser for source-support aggregation.
+
+    Returns:
+        A configured parser with documented defaults and validation controls.
+    """
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate source-support training results and create the input "
-            "table used for performance summaries."
+            "Aggregate source-support training results, select configurations "
+            "using validation MCC within each fold, and write audit and "
+            "plot-ready tables."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input-root", type=Path, required=True)
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        required=True,
+        help="Root directory containing the configured subset directories.",
+    )
     parser.add_argument(
         "--output-xlsx",
         type=Path,
         default=Path("training_results_source_support.xlsx"),
+        help="Destination workbook path.",
     )
     parser.add_argument(
         "--representations",
         nargs="+",
         default=list(DEFAULT_REPRESENTATIONS),
+        help="Representation directory prefixes to include.",
     )
     parser.add_argument(
         "--algorithms",
         nargs="+",
         default=list(DEFAULT_ALGORITHMS),
+        help="Algorithm directory and filename identifiers to include.",
     )
-    parser.add_argument("--splits", nargs="+", default=list(DEFAULT_SPLITS))
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        default=list(DEFAULT_SPLITS),
+        help="Split-strategy directory names to include.",
+    )
     parser.add_argument(
         "--scaler",
         default="none",
@@ -821,23 +1040,43 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-seed-count",
         type=int,
         default=30,
+        help="Required number of seeds in every subset-by-split cell.",
     )
     parser.add_argument(
         "--expected-fold-count",
         type=int,
         default=5,
+        help="Required number of folds in every model unit.",
     )
     parser.add_argument(
         "--allow-incomplete",
         action="store_true",
-        help="Write outputs despite failed completeness checks.",
+        help=(
+            "Write outputs despite discovery or completeness failures. "
+            "Use only for diagnostics."
+        ),
     )
-    parser.add_argument("--no-csv", action="store_true")
+    parser.add_argument(
+        "--no-csv",
+        action="store_true",
+        help="Disable the three companion CSV exports.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {SCRIPT_VERSION}",
+    )
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    """Parse arguments and run discovery, aggregation, validation, and export.
+
+    Args:
+        argv: Optional argument sequence for programmatic invocation. ``None``
+            reads arguments from the process command line.
+    """
+    args = build_parser().parse_args(argv)
     input_root = args.input_root.resolve()
     if not input_root.is_dir():
         raise FileNotFoundError(f"Input root does not exist: {input_root}")
@@ -851,7 +1090,7 @@ def main() -> None:
     status(f"Scaler: {args.scaler}")
     status("Configuration selection: highest mcc_val independently within each fold")
     status("Test use in selection: none")
-    status("Figure aggregation: mean selected mcc_test across folds")
+    status("Plot aggregation: mean selected mcc_test across folds")
 
     files, discovery_problems = discover_files(
         input_root=input_root,
@@ -952,9 +1191,9 @@ def main() -> None:
         write_csv=not args.no_csv,
     )
 
-    status("\nFinal Figure 2D counts:")
+    status("\nFinal plot-input counts:")
     print(audit_figure.to_string(index=False), flush=True)
-    status("\nValues for Figure 2D/Table S19 (seed-level CI):")
+    status("\nSource-support summary values (seed-level CI):")
     print(support_summary.to_string(index=False), flush=True)
 
 
