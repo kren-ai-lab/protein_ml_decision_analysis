@@ -214,3 +214,6 @@ numerical_representation_data/
 
 # LibreOffice lock files
 .~lock.*#
+
+# Large pairwise-similarity files generated for Figure 3
+notebooks_and_scripts/figures/fig3/data/*_pair_type_similarity_values.csv

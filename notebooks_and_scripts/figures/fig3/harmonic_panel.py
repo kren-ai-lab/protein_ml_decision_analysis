@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Create Figure 4 as a 4-panel composite with subpanels styled like the
-reference images supplied by the user, using larger ~15 pt typography.
+"""Generate a four-panel summary of representation-space analyses.
 
-Expected input files in --input-dir
------------------------------------
-- selected_projection_coordinates_long.csv
-- onehot_pair_type_similarity_values.csv
-- prot_t5_pair_type_similarity_values.csv
-- ankh2_pair_type_similarity_values.csv
-- mistral_pair_type_similarity_values.csv
-- onehot_reduced_distance_reduction_summary.csv
-- prot_t5_xl_uniref50_reduced_distance_reduction_summary.csv
-- ankh2_ext1_reduced_distance_reduction_summary.csv
-- mistral_Prot_v1_134M_reduced_distance_reduction_summary.csv
-- similarity_distribution_panel_summary.csv  (optional; exact mean labels)
+The composite combines projection coordinates, pairwise-similarity
+distributions, sequence-retention summaries, and class-balance statistics.
+Required input filenames and column schemas are documented in the companion
+README and are also summarized by ``--help``.
+
+The script writes a raster image and can optionally export a PDF copy. It does
+not modify the input tables.
 """
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import warnings
+from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -33,11 +27,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 
-# ============================================================
-# Global style
-# ============================================================
+# Plot configuration
 
-# Font scale requested by user: all text around 15 pt.
+SCRIPT_VERSION = "1.0"
 BASE_FONT = 15
 TITLE_FONT = 16
 TICK_FONT = 14
@@ -62,12 +54,12 @@ SPINE = "#9AA1AA"
 GRID = "#E3E6EA"
 DASH = "#6B6F76"
 
-# Neutral class colors for panel A, matching the attached reference.
+# Neutral class colors for projection points.
 POS_COLOR = "#6D727A"
 NEG_COLOR = "#C9CED4"
 POINT_EDGE = "#FFFFFF"
 
-# Panel B representation colors.
+# Representation-specific similarity-distribution colors.
 REP_LINE = {
     "One-hot": "#5E6268",
     "ProtT5-XL": "#5D7DB9",
@@ -82,7 +74,7 @@ REP_FILL = {
     "Mistral-Prot": "#E8DDF5",
 }
 
-# Panels C and D palettes.
+# Retention, removal, and coverage colors.
 GREEN = "#97B77F"
 RED = "#CC7668"
 BLUE = "#879FC9"
@@ -106,104 +98,156 @@ RED_FILES = {
 }
 
 
-# ============================================================
-# Arguments
-# ============================================================
+# Command-line interface
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Create a four-panel Figure 4 matching the supplied visual references."
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the command-line argument parser."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate a four-panel summary of projection coordinates, "
+            "pairwise-similarity distributions, sequence retention, and class "
+            "balance across protein representations."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--input-dir", required=True, help="Directory containing all CSV files.")
-    p.add_argument(
+    parser.add_argument(
+        "--input-dir",
+        required=True,
+        help="Directory containing the required CSV input files.",
+    )
+    parser.add_argument(
         "--output",
         default=None,
-        help="Output figure path. Default: <input-dir>/figure4_harmonic_panel_v14_panelA_common_scale.png",
+        help=(
+            "Output image path. When omitted, harmonic_panel.png is written "
+            "inside --input-dir."
+        ),
     )
-    p.add_argument("--dpi", type=int, default=300)
-    p.add_argument(
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Resolution of the raster output in dots per inch.",
+    )
+    parser.add_argument(
         "--sample-size",
         type=int,
         default=150000,
-        help="Maximum number of similarity values sampled per representation for panel B.",
+        help=(
+            "Maximum number of similarity values sampled per representation "
+            "for the distribution panel."
+        ),
     )
-    p.add_argument("--random-state", type=int, default=42)
-    p.add_argument(
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=42,
+        help="Random seed used when similarity values are subsampled.",
+    )
+    parser.add_argument(
         "--projection-method",
         default="UMAP",
         choices=["UMAP", "t-SNE", "PCA"],
-        help="Projection method used in panel A.",
+        help="Projection method selected from the coordinate table.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--top-layout",
         default="row",
         choices=["grid", "row"],
         help=(
-            "Layout for panels A and B. Use 'grid' for compact 2x2 blocks "
-            "that look more square, or 'row' for the horizontal 1x4 layout."
+            "Arrangement of the four representation plots in each top panel: "
+            "a horizontal row or a compact 2-by-2 grid."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--legend-x",
         type=float,
         default=None,
         help=(
-            "Optional figure-level x position for the Panel A legend. "
-            "Default: 0.275. Increase to move right; decrease to move left."
+            "Optional normalized figure x coordinate for the class legend. "
+            "Layout-specific defaults are used when omitted."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--legend-y",
         type=float,
         default=None,
         help=(
-            "Optional figure-level y position for the Panel A legend. "
-            "Default in row layout: 0.600; default in grid layout: 0.492. "
-            "Increase to move up; decrease to move down."
+            "Optional normalized figure y coordinate for the class legend. "
+            "Layout-specific defaults are used when omitted."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--panel-c-legend-x",
         type=float,
         default=None,
         help=(
-            "Optional figure-level x position for the Panel C legend. "
-            "Default: 0.275. Increase to move right; decrease to move left."
+            "Optional normalized figure x coordinate for the retention legend."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--panel-c-legend-y",
         type=float,
         default=None,
         help=(
-            "Optional figure-level y position for the Panel C legend. "
-            "Default: 0.035. Increase to move up; decrease to move down."
+            "Optional normalized figure y coordinate for the retention legend."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--panel-c-bar-width",
         type=float,
         default=0.96,
         help=(
-            "Width of the stacked bars in Panel C. Larger values make bars wider. "
-            "Default: 0.96."
+            "Width of the stacked retention bars; values are constrained to "
+            "the interval [0.45, 1.00]."
         ),
     )
-    p.add_argument(
+    parser.add_argument(
         "--similarity-xmin",
         default="auto",
-        help="Panel B x-axis lower limit. Use 'auto', 0, -0.2, etc.",
+        help=(
+            "Lower limit of the similarity axis. Use 'auto' or a numeric value "
+            "such as 0 or -0.2."
+        ),
     )
-    p.add_argument("--also-pdf", action="store_true", help="Also export a PDF copy.")
-    return p.parse_args()
+    parser.add_argument(
+        "--also-pdf",
+        action="store_true",
+        help="Write a PDF copy beside the raster image.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {SCRIPT_VERSION}",
+    )
+    return parser
 
 
-# ============================================================
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv: Optional argument sequence. When omitted, arguments are read from
+            the process command line.
+
+    Returns:
+        Parsed command-line arguments.
+    """
+    return build_parser().parse_args(argv)
+
+
 # Shared helpers
-# ============================================================
 
 def style_clean_axis(ax, grid: bool = False, ygrid_only: bool = False) -> None:
-    """Clean journal-style axis used by all panels."""
+    """Apply the shared visual style to a Matplotlib axis.
+
+    Args:
+        ax: Axis to modify.
+        grid: Whether to draw grid lines on both axes.
+        ygrid_only: Whether to draw horizontal grid lines only. This option
+            takes precedence over ``grid``.
+    """
     ax.set_facecolor("white")
 
     ax.spines["top"].set_visible(False)
@@ -229,10 +273,21 @@ def style_clean_axis(ax, grid: bool = False, ygrid_only: bool = False) -> None:
 
 
 def read_projection_data(input_dir: Path) -> pd.DataFrame:
-    f = input_dir / "selected_projection_coordinates_long.csv"
-    if not f.exists():
-        raise FileNotFoundError(f"Missing file: {f}")
-    return pd.read_csv(f)
+    """Read the projection-coordinate table.
+
+    Args:
+        input_dir: Directory containing the workflow input files.
+
+    Returns:
+        Projection coordinates loaded from the expected CSV file.
+
+    Raises:
+        FileNotFoundError: If the projection-coordinate file does not exist.
+    """
+    path = input_dir / "selected_projection_coordinates_long.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing file: {path}")
+    return pd.read_csv(path)
 
 
 def get_panel_a_common_limits(
@@ -240,32 +295,45 @@ def get_panel_a_common_limits(
     projection_method: str,
     padding_fraction: float = 0.05,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
-    """
-    Compute common x/y limits for all Panel A subplots.
+    """Compute shared coordinate limits for all projection subplots.
 
-    This keeps the physical subplot size unchanged, but forces the same
-    coordinate scale across the four representation projections so that the
-    visual spread is directly comparable.
+    Args:
+        proj_df: Projection table containing representation, method, and two
+            coordinate columns.
+        projection_method: Projection method to retain.
+        padding_fraction: Fraction of each coordinate span added to both sides
+            of the corresponding axis.
+
+    Returns:
+        A pair containing the x-axis limits and y-axis limits.
+
+    Raises:
+        ValueError: If required columns are missing or no finite coordinates
+            are available for the requested method.
     """
     required_cols = {"representation", "method", "dim_1", "dim_2"}
     missing = required_cols.difference(proj_df.columns)
     if missing:
-        raise ValueError(f"Projection file is missing required columns: {sorted(missing)}")
+        raise ValueError(
+            f"Projection file is missing required columns: {sorted(missing)}"
+        )
 
     sub = proj_df[
-        (proj_df["representation"].isin(REP_ORDER)) &
-        (proj_df["method"] == projection_method)
+        (proj_df["representation"].isin(REP_ORDER))
+        & (proj_df["method"] == projection_method)
     ].copy()
 
     if sub.empty:
-        raise ValueError(f"No {projection_method} projection data found for Panel A.")
+        raise ValueError(f"No {projection_method} projection data were found.")
 
     sub["dim_1"] = pd.to_numeric(sub["dim_1"], errors="coerce")
     sub["dim_2"] = pd.to_numeric(sub["dim_2"], errors="coerce")
     sub = sub.dropna(subset=["dim_1", "dim_2"])
 
     if sub.empty:
-        raise ValueError(f"No finite {projection_method} coordinates found for Panel A.")
+        raise ValueError(
+            f"No finite {projection_method} projection coordinates were found."
+        )
 
     x_min = float(sub["dim_1"].min())
     x_max = float(sub["dim_1"].max())
@@ -275,7 +343,7 @@ def get_panel_a_common_limits(
     x_span = x_max - x_min
     y_span = y_max - y_min
 
-    # Avoid zero-width limits if a projection dimension is constant.
+    # Expand constant dimensions to obtain valid axis limits.
     if x_span == 0:
         x_span = 1.0
         x_min -= 0.5
@@ -291,13 +359,37 @@ def get_panel_a_common_limits(
     return (x_min - x_pad, x_max + x_pad), (y_min - y_pad, y_max + y_pad)
 
 
-def load_similarity(input_dir: Path, rep: str, sample_size: int, random_state: int) -> np.ndarray:
-    f = input_dir / SIM_FILES[rep]
-    if not f.exists():
-        raise FileNotFoundError(f"Missing file: {f}")
+def load_similarity(
+    input_dir: Path,
+    rep: str,
+    sample_size: int,
+    random_state: int,
+) -> np.ndarray:
+    """Load and optionally subsample similarity values for a representation.
 
-    df = pd.read_csv(f, usecols=["similarity"])
+    Args:
+        input_dir: Directory containing the workflow input files.
+        rep: Canonical representation label defined in ``SIM_FILES``.
+        sample_size: Maximum number of values to retain.
+        random_state: Random seed used for reproducible subsampling.
+
+    Returns:
+        One-dimensional array of finite numeric similarity values.
+
+    Raises:
+        FileNotFoundError: If the representation-specific file is missing.
+        ValueError: If the CSV does not contain a ``similarity`` column.
+    """
+    path = input_dir / SIM_FILES[rep]
+    if not path.exists():
+        raise FileNotFoundError(f"Missing file: {path}")
+
+    df = pd.read_csv(path, usecols=["similarity"])
     vals = pd.to_numeric(df["similarity"], errors="coerce").dropna()
+    vals = vals[np.isfinite(vals)]
+
+    if vals.empty:
+        raise ValueError(f"No finite similarity values found in: {path}")
 
     if sample_size is not None and len(vals) > sample_size:
         vals = vals.sample(n=sample_size, random_state=random_state, replace=False)
@@ -306,11 +398,21 @@ def load_similarity(input_dir: Path, rep: str, sample_size: int, random_state: i
 
 
 def load_exact_means_from_summary(input_dir: Path) -> dict[str, float]:
-    f = input_dir / "similarity_distribution_panel_summary.csv"
-    if not f.exists():
+    """Read optional precomputed similarity means.
+
+    Args:
+        input_dir: Directory containing the workflow input files.
+
+    Returns:
+        Mapping from canonical representation labels to numeric means. An empty
+        mapping is returned when the optional file or its required columns are
+        unavailable.
+    """
+    path = input_dir / "similarity_distribution_panel_summary.csv"
+    if not path.exists():
         return {}
 
-    df = pd.read_csv(f)
+    df = pd.read_csv(path)
     if not {"label", "mean"}.issubset(df.columns):
         return {}
 
@@ -324,6 +426,19 @@ def load_exact_means_from_summary(input_dir: Path) -> dict[str, float]:
 
 
 def read_reduction_file(path: Path) -> pd.DataFrame:
+    """Read and normalize a representation-specific reduction summary.
+
+    Args:
+        path: CSV file containing percentile-based reduction statistics.
+
+    Returns:
+        Normalized table with numeric ``percentile`` and ``kept_fraction``
+        columns.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If percentile or retention information cannot be derived.
+    """
     if not path.exists():
         raise FileNotFoundError(f"Missing file: {path}")
 
@@ -335,20 +450,31 @@ def read_reduction_file(path: Path) -> pd.DataFrame:
         "n_after": "n_reduced",
         "n_removed": "removed",
     }
-    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns and v not in df.columns})
+    df = df.rename(
+        columns={
+            key: value
+            for key, value in rename_map.items()
+            if key in df.columns and value not in df.columns
+        }
+    )
 
     if "percentile" not in df.columns:
-        raise ValueError(f"Reduction file {path} must contain 'percentile' or 'parameter_value'.")
+        raise ValueError(
+            f"Reduction file {path} must contain 'percentile' or "
+            "'parameter_value'."
+        )
 
     df["percentile"] = pd.to_numeric(df["percentile"], errors="coerce")
 
     if "kept_fraction" not in df.columns:
         if "kept_percent" in df.columns:
-            df["kept_fraction"] = pd.to_numeric(df["kept_percent"], errors="coerce") / 100.0
+            df["kept_fraction"] = (
+                pd.to_numeric(df["kept_percent"], errors="coerce") / 100.0
+            )
         elif {"n_original", "n_reduced"}.issubset(df.columns):
             df["kept_fraction"] = (
-                pd.to_numeric(df["n_reduced"], errors="coerce") /
-                pd.to_numeric(df["n_original"], errors="coerce")
+                pd.to_numeric(df["n_reduced"], errors="coerce")
+                / pd.to_numeric(df["n_original"], errors="coerce")
             )
         else:
             raise ValueError(
@@ -360,6 +486,19 @@ def read_reduction_file(path: Path) -> pd.DataFrame:
 
 
 def original_balance(proj_df: pd.DataFrame) -> tuple[int, int, float, float]:
+    """Calculate the original binary-class counts and percentages.
+
+    Args:
+        proj_df: Projection table containing sequence identifiers and labels.
+
+    Returns:
+        Negative count, positive count, negative percentage, and positive
+        percentage.
+
+    Raises:
+        KeyError: If the required identifier or label columns are missing.
+        ValueError: If no binary class observations are available.
+    """
     sub = proj_df[
         (proj_df["representation"] == "One-hot") &
         (proj_df["method"] == "UMAP")
@@ -378,11 +517,36 @@ def original_balance(proj_df: pd.DataFrame) -> tuple[int, int, float, float]:
     return neg, pos, 100.0 * neg / total, 100.0 * pos / total
 
 
-def choose_similarity_xlim(values_by_rep: dict[str, np.ndarray], xmin_arg: str) -> tuple[float, float]:
-    if xmin_arg != "auto":
-        return float(xmin_arg), 1.0
+def choose_similarity_xlim(
+    values_by_rep: dict[str, np.ndarray],
+    xmin_arg: str,
+) -> tuple[float, float]:
+    """Choose similarity-axis limits from the argument and observed values.
 
-    finite = [v[np.isfinite(v)] for v in values_by_rep.values() if np.any(np.isfinite(v))]
+    Args:
+        values_by_rep: Similarity arrays keyed by representation label.
+        xmin_arg: ``"auto"`` or an explicit numeric lower limit represented as
+            text.
+
+    Returns:
+        Lower and upper limits for the similarity axis. The upper limit is
+        fixed at 1.0.
+
+    Raises:
+        ValueError: If an explicit lower limit is not numeric or is greater
+            than or equal to 1.
+    """
+    if xmin_arg != "auto":
+        xmin = float(xmin_arg)
+        if xmin >= 1.0:
+            raise ValueError("--similarity-xmin must be smaller than 1.")
+        return xmin, 1.0
+
+    finite = [
+        values[np.isfinite(values)]
+        for values in values_by_rep.values()
+        if np.any(np.isfinite(values))
+    ]
     if not finite:
         return 0.0, 1.0
 
@@ -401,7 +565,17 @@ def normalized_smoothed_hist(
     rng: tuple[float, float] = (0.0, 1.0),
     window: int = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Histogram-based relative density scaled to max = 1."""
+    """Estimate a smoothed histogram and scale its maximum to one.
+
+    Args:
+        values: Similarity values to summarize.
+        bins: Number of histogram bins.
+        rng: Inclusive numeric range used to filter and bin the values.
+        window: Width of the moving-average smoothing kernel.
+
+    Returns:
+        Bin-center coordinates and normalized density values.
+    """
     values = values[np.isfinite(values)]
     values = values[(values >= rng[0]) & (values <= rng[1])]
 
@@ -419,8 +593,24 @@ def normalized_smoothed_hist(
     return x, hist
 
 
-def find_class_counts(row: pd.Series, fallback_neg: int, fallback_pos: int) -> tuple[int, int]:
-    """Return class counts if present in the reduction summary; otherwise fallback."""
+def find_class_counts(
+    row: pd.Series,
+    fallback_neg: int,
+    fallback_pos: int,
+) -> tuple[int, int]:
+    """Extract binary-class counts or return the provided fallback values.
+
+    Args:
+        row: Reduction-summary row that may contain recognized class-count
+            columns.
+        fallback_neg: Negative-class count used when no recognized columns are
+            present.
+        fallback_pos: Positive-class count used when no recognized columns are
+            present.
+
+    Returns:
+        Negative- and positive-class counts.
+    """
     possible_neg = ["n_0", "label_0", "negative", "n_negative", "negative_n"]
     possible_pos = ["n_1", "label_1", "positive", "n_positive", "positive_n"]
 
@@ -433,12 +623,15 @@ def find_class_counts(row: pd.Series, fallback_neg: int, fallback_pos: int) -> t
     return fallback_neg, fallback_pos
 
 
-# ============================================================
-# Panel A: projection coordinates
-# ============================================================
+# Projection panel
 
 def make_panel_a_legend_handles() -> list[Line2D]:
-    """Legend handles for the class colors used in panel A."""
+    """Create legend handles for the binary-class projection colors.
+
+    Returns:
+        Two Matplotlib line handles representing the positive and negative
+        classes.
+    """
     return [
         Line2D([0], [0], marker="o", color="none",
                markerfacecolor=POS_COLOR, markeredgecolor=POINT_EDGE,
@@ -449,19 +642,35 @@ def make_panel_a_legend_handles() -> list[Line2D]:
     ]
 
 
-def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout: str) -> list[Line2D]:
-    """
-    Plot panel A without reserving an internal legend row.
+def plot_panel_a(
+    fig,
+    spec,
+    input_dir: Path,
+    projection_method: str,
+    top_layout: str,
+) -> list[Line2D]:
+    """Plot representation-specific two-dimensional projections.
 
-    The legend is returned to main() and placed as a figure-level legend in the
-    gap between the top and bottom rows. This keeps panels A and B exactly the
-    same height.
+    Args:
+        fig: Matplotlib figure receiving the subplots.
+        spec: Grid specification assigned to the projection panel.
+        input_dir: Directory containing the workflow input files.
+        projection_method: Projection method to select from the input table.
+        top_layout: Arrangement of the four representation subplots; either
+            ``"row"`` or ``"grid"``.
+
+    Returns:
+        Legend handles for placement at the figure level.
+
+    Raises:
+        ValueError: If projection data are unavailable for any expected
+            representation.
     """
     proj_df = read_projection_data(input_dir)
     common_xlim, common_ylim = get_panel_a_common_limits(proj_df, projection_method)
 
     if top_layout == "grid":
-        # Compact 2x2 block: avoids the long horizontal strip effect in the final panel.
+        # Use a compact two-by-two representation layout.
         inner = GridSpecFromSubplotSpec(
             2, 2,
             subplot_spec=spec,
@@ -469,7 +678,7 @@ def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout:
             wspace=0.30,
         )
     else:
-        # Original 1x4 layout, but with square axes.
+        # Use a horizontal row while retaining square axes.
         inner = GridSpecFromSubplotSpec(
             1, 4,
             subplot_spec=spec,
@@ -484,12 +693,14 @@ def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout:
         style_clean_axis(ax, grid=False)
 
         sub = proj_df[
-            (proj_df["representation"] == rep) &
-            (proj_df["method"] == projection_method)
+            (proj_df["representation"] == rep)
+            & (proj_df["method"] == projection_method)
         ].copy()
 
         if sub.empty:
-            raise ValueError(f"No {projection_method} data found for representation: {rep}")
+            raise ValueError(
+                f"No {projection_method} data were found for representation: {rep}"
+            )
 
         sub["label"] = pd.to_numeric(sub["label"], errors="coerce")
         neg = sub[sub["label"] == 0]
@@ -514,9 +725,7 @@ def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout:
             rasterized=True,
         )
 
-        # Same coordinate limits for all four Panel A projections.
-        # This does not change the physical subplot size; it only makes the
-        # x/y scales comparable across representations.
+        # Shared coordinate limits make visual spread comparable.
         ax.set_xlim(common_xlim)
         ax.set_ylim(common_ylim)
 
@@ -524,7 +733,7 @@ def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout:
         ax.set_box_aspect(1)
 
         if top_layout == "grid":
-            # In 2x2 mode, label only the outer axes to keep the block clean.
+            # Label only the outer axes in the two-by-two layout.
             if i // 2 == 1:
                 ax.set_xlabel(f"{projection_method}-1")
             else:
@@ -547,9 +756,7 @@ def plot_panel_a(fig, spec, input_dir: Path, projection_method: str, top_layout:
     return make_panel_a_legend_handles()
 
 
-# ============================================================
-# Panel B: similarity distributions
-# ============================================================
+# Similarity-distribution panel
 
 def plot_panel_b(
     fig,
@@ -560,6 +767,18 @@ def plot_panel_b(
     xmin_arg: str,
     top_layout: str,
 ) -> None:
+    """Plot normalized similarity distributions by representation.
+
+    Args:
+        fig: Matplotlib figure receiving the subplots.
+        spec: Grid specification assigned to the distribution panel.
+        input_dir: Directory containing the workflow input files.
+        sample_size: Maximum number of values retained per representation.
+        random_state: Random seed used for reproducible subsampling.
+        xmin_arg: Automatic or explicit lower limit of the similarity axis.
+        top_layout: Arrangement of the four representation subplots; either
+            ``"row"`` or ``"grid"``.
+    """
     values_by_rep = {
         rep: load_similarity(input_dir, rep, sample_size, random_state)
         for rep in REP_ORDER
@@ -568,7 +787,7 @@ def plot_panel_b(
     xmin, xmax = choose_similarity_xlim(values_by_rep, xmin_arg)
 
     if top_layout == "grid":
-        # Compact 2x2 block: avoids making panel B look like a long strip.
+        # Use a compact two-by-two representation layout.
         inner = GridSpecFromSubplotSpec(
             2, 2,
             subplot_spec=spec,
@@ -589,7 +808,7 @@ def plot_panel_b(
             ax = fig.add_subplot(inner[0, i])
         style_clean_axis(ax, grid=False)
 
-        # Reference style: only light vertical guides.
+        # Vertical guides support comparisons along the similarity axis.
         ax.grid(True, axis="x", color=GRID, linewidth=0.75)
         ax.grid(False, axis="y")
         ax.set_axisbelow(True)
@@ -619,7 +838,7 @@ def plot_panel_b(
         ax.set_box_aspect(1)
 
         if top_layout == "grid":
-            # In 2x2 mode, label only the outer axes to keep the block compact.
+            # Label only the outer axes in the two-by-two layout.
             if i // 2 == 1:
                 ax.set_xlabel("Cosine similarity")
             else:
@@ -640,12 +859,14 @@ def plot_panel_b(
                 ax.tick_params(labelleft=False)
 
 
-# ============================================================
-# Panel C: retained/removed sequences by threshold
-# ============================================================
+# Sequence-retention panel
 
 def make_panel_c_legend_handles() -> list[Patch]:
-    """Legend handles for the retained/removed colors used in panel C."""
+    """Create legend handles for retained and removed sequence fractions.
+
+    Returns:
+        Two Matplotlib patch handles representing retained and removed values.
+    """
     return [
         Patch(facecolor=GREEN, edgecolor="white", label="Retained (%)"),
         Patch(facecolor=RED, edgecolor="white", label="Removed (%)"),
@@ -653,12 +874,21 @@ def make_panel_c_legend_handles() -> list[Patch]:
 
 
 def plot_panel_c(fig, spec, input_dir: Path, bar_width: float = 0.96) -> list[Patch]:
-    """
-    Plot panel C without reserving an internal legend row.
+    """Plot retained and removed sequence percentages across thresholds.
 
-    The legend is returned to main() and placed as a figure-level legend below
-    panel C. This keeps panels C and D aligned and the same height, just as the
-    panel-A legend was moved out of panel A.
+    Args:
+        fig: Matplotlib figure receiving the subplots.
+        spec: Grid specification assigned to the retention panel.
+        input_dir: Directory containing the workflow input files.
+        bar_width: Requested width of each stacked bar. Values are constrained
+            to the interval [0.45, 1.00].
+
+    Returns:
+        Legend handles for placement at the figure level.
+
+    Raises:
+        ValueError: If any required percentile is missing from a reduction
+            summary.
     """
     redfs = {
         rep: read_reduction_file(input_dir / RED_FILES[rep])
@@ -671,7 +901,7 @@ def plot_panel_c(fig, spec, input_dir: Path, bar_width: float = 0.96) -> list[Pa
         wspace=0.16,
     )
 
-    # Keep user-controlled values in a safe visual range.
+    # Constrain the requested width to a stable visual range.
     bar_width = max(0.45, min(1.00, float(bar_width)))
 
     for j, pct in enumerate(PCTS_C):
@@ -693,13 +923,26 @@ def plot_panel_c(fig, spec, input_dir: Path, bar_width: float = 0.96) -> list[Pa
             kepts.append(kept)
             removeds.append(removed)
 
-        ax.bar(x, kepts, width=bar_width, color=GREEN, edgecolor="white", linewidth=0.7)
-        ax.bar(x, removeds, width=bar_width, bottom=kepts, color=RED, edgecolor="white", linewidth=0.7)
+        ax.bar(
+            x,
+            kepts,
+            width=bar_width,
+            color=GREEN,
+            edgecolor="white",
+            linewidth=0.7,
+        )
+        ax.bar(
+            x,
+            removeds,
+            width=bar_width,
+            bottom=kepts,
+            color=RED,
+            edgecolor="white",
+            linewidth=0.7,
+        )
 
         for xi, kept, removed in zip(x, kepts, removeds):
-            # Values are centered on their corresponding stacked-bar segment.
-            # Hide labels for very small stacked segments (<5) because they are
-            # hard to read and visually clutter the panel.
+            # Label only segments large enough to display readable text.
             if kept >= PANEL_C_MIN_LABEL_VALUE:
                 ax.text(
                     xi, kept / 2.0,
@@ -734,11 +977,24 @@ def plot_panel_c(fig, spec, input_dir: Path, bar_width: float = 0.96) -> list[Pa
     return make_panel_c_legend_handles()
 
 
-# ============================================================
-# Panel D: coverage and class balance at p90
-# ============================================================
+# Coverage and class-balance panel
 
 def plot_panel_d(fig, spec, input_dir: Path) -> None:
+    """Plot coverage and binary-class balance at the configured percentile.
+
+    Args:
+        fig: Matplotlib figure receiving the subplots.
+        spec: Grid specification assigned to the coverage panel.
+        input_dir: Directory containing the workflow input files.
+
+    Warns:
+        UserWarning: If a reduction table lacks class counts and the original
+            class balance is used as a fallback.
+
+    Raises:
+        ValueError: If the configured percentile is absent or class totals are
+            invalid.
+    """
     proj_df = read_projection_data(input_dir)
     neg0, pos0, neg_pct0, pos_pct0 = original_balance(proj_df)
 
@@ -754,6 +1010,10 @@ def plot_panel_d(fig, spec, input_dir: Path) -> None:
         if {"n_original", "n_reduced"}.issubset(row.index):
             n_original = int(row["n_original"])
             n_reduced = int(row["n_reduced"])
+            if n_original <= 0:
+                raise ValueError(
+                    f"n_original must be greater than zero for {rep} at p{PCT_D}."
+                )
             coverage = 100.0 * n_reduced / n_original
         else:
             coverage = float(row["kept_fraction"]) * 100.0
@@ -761,10 +1021,15 @@ def plot_panel_d(fig, spec, input_dir: Path) -> None:
         n_neg, n_pos = find_class_counts(row, fallback_neg=neg0, fallback_pos=pos0)
         if (n_neg, n_pos) == (neg0, pos0) and coverage < 99.5:
             warnings.warn(
-                f"No class counts found for {rep}; using original class balance as fallback."
+                f"No class counts found for {rep}; using the original class "
+                "balance as a fallback."
             )
 
         total = n_neg + n_pos
+        if total <= 0:
+            raise ValueError(
+                f"Class counts must sum to a positive value for {rep} at p{PCT_D}."
+            )
         pos_pct = 100.0 * n_pos / total
         neg_pct = 100.0 * n_neg / total
         metrics.append((rep, coverage, pos_pct, neg_pct))
@@ -784,7 +1049,14 @@ def plot_panel_d(fig, spec, input_dir: Path) -> None:
     panels = [
         ("coverage", "Coverage at p90", "% of original", BLUE, None, "{:.0f}"),
         ("positive_pct", "Positives", "Positive class (%)", GREEN, pos_pct0, "{:.1f}"),
-        ("negative_pct", "Negatives", "Negative class (%)", RED, neg_pct0, "{:.1f}"),
+        (
+            "negative_pct",
+            "Negatives",
+            "Negative class (%)",
+            RED,
+            neg_pct0,
+            "{:.1f}",
+        ),
     ]
 
     for k, (col, title, ylabel, color, baseline, fmt) in enumerate(panels):
@@ -792,10 +1064,22 @@ def plot_panel_d(fig, spec, input_dir: Path) -> None:
         style_clean_axis(ax, grid=False)
 
         vals = met[col].values.astype(float)
-        bars = ax.bar(x, vals, width=0.58, color=color, edgecolor="white", linewidth=0.7)
+        bars = ax.bar(
+            x,
+            vals,
+            width=0.58,
+            color=color,
+            edgecolor="white",
+            linewidth=0.7,
+        )
 
         if baseline is not None:
-            ax.axhline(baseline, color=DASH, linestyle=(0, (4, 3)), linewidth=1.0)
+            ax.axhline(
+                baseline,
+                color=DASH,
+                linestyle=(0, (4, 3)),
+                linewidth=1.0,
+            )
 
         for rect, val in zip(bars, vals):
             ax.text(
@@ -815,19 +1099,32 @@ def plot_panel_d(fig, spec, input_dir: Path) -> None:
         ax.set_ylabel(ylabel)
 
 
-# ============================================================
-# Main
-# ============================================================
+# Program entry point
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the command-line workflow and write the requested figure files.
+
+    Args:
+        argv: Optional argument sequence. When omitted, arguments are read from
+            the process command line.
+    """
+    args = parse_args(argv)
 
     input_dir = Path(args.input_dir).expanduser().resolve()
     output = (
         Path(args.output).expanduser().resolve()
         if args.output
-        else input_dir / "figure4_harmonic_panel_v14_panelA_common_scale.png"
+        else input_dir / "harmonic_panel.png"
     )
+
+    if not input_dir.is_dir():
+        raise NotADirectoryError(f"Input directory does not exist: {input_dir}")
+    if args.dpi <= 0:
+        raise ValueError("--dpi must be greater than zero.")
+    if args.sample_size <= 0:
+        raise ValueError("--sample-size must be greater than zero.")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     if args.top_layout == "grid":
         fig = plt.figure(figsize=(18.8, 12.8), facecolor="white")
@@ -841,20 +1138,37 @@ def main() -> None:
         right=0.985,
         bottom=0.085,
         top=0.965,
-        hspace=0.34 if args.top_layout == "grid" else 0.34,
+        hspace=0.34,
         wspace=0.16,
         height_ratios=[1.18, 1.00] if args.top_layout == "grid" else [0.86, 1.00],
         width_ratios=[1.02, 0.98] if args.top_layout == "grid" else [1.04, 0.96],
     )
 
-    panel_a_handles = plot_panel_a(fig, outer[0, 0], input_dir, args.projection_method, args.top_layout)
-    plot_panel_b(fig, outer[0, 1], input_dir, args.sample_size, args.random_state, args.similarity_xmin, args.top_layout)
-    panel_c_handles = plot_panel_c(fig, outer[1, 0], input_dir, args.panel_c_bar_width)
+    panel_a_handles = plot_panel_a(
+        fig,
+        outer[0, 0],
+        input_dir,
+        args.projection_method,
+        args.top_layout,
+    )
+    plot_panel_b(
+        fig,
+        outer[0, 1],
+        input_dir,
+        args.sample_size,
+        args.random_state,
+        args.similarity_xmin,
+        args.top_layout,
+    )
+    panel_c_handles = plot_panel_c(
+        fig,
+        outer[1, 0],
+        input_dir,
+        args.panel_c_bar_width,
+    )
     plot_panel_d(fig, outer[1, 1], input_dir)
 
-    # Figure-level legend: it does not consume panel-A space, so panels A and B
-    # stay aligned and equal in size. In row layout, the legend is intentionally
-    # placed higher in the gap between rows so it sits closer to panel A.
+    # A figure-level class legend preserves equal space for both top panels.
     default_legend_x = 0.275
     default_legend_y = 0.492 if args.top_layout == "grid" else 0.600
     legend_x = default_legend_x if args.legend_x is None else args.legend_x
@@ -871,16 +1185,18 @@ def main() -> None:
         columnspacing=2.0,
     )
 
-    # Figure-level legend for panel C. It does not consume panel-C space,
-    # therefore panels C and D keep the same height. By default it sits below
-    # the bottom-left panel; use --panel-c-legend-y to fine-tune it.
+    # A figure-level retention legend preserves equal space for bottom panels.
     default_panel_c_legend_x = 0.275
     default_panel_c_legend_y = 0.035
     panel_c_legend_x = (
-        default_panel_c_legend_x if args.panel_c_legend_x is None else args.panel_c_legend_x
+        default_panel_c_legend_x
+        if args.panel_c_legend_x is None
+        else args.panel_c_legend_x
     )
     panel_c_legend_y = (
-        default_panel_c_legend_y if args.panel_c_legend_y is None else args.panel_c_legend_y
+        default_panel_c_legend_y
+        if args.panel_c_legend_y is None
+        else args.panel_c_legend_y
     )
 
     fig.legend(
@@ -903,22 +1219,12 @@ def main() -> None:
 
     plt.close(fig)
 
-    print("Done")
-    print(f"Panel saved to: {output}")
+    print(f"Saved image: {output}")
     if args.also_pdf:
-        print(f"PDF saved to: {output.with_suffix('.pdf')}")
-    print("Updated style with larger typography and equal top-row panels:")
-    print("- Panel A uses neutral gray class colors like the reference.")
-    print("- Panel A uses the same x/y coordinate limits for all four projection plots.")
-    print("- Panel A legend is placed as a figure-level legend between rows, so A and B keep the same height.")
-    print(f"- Top-row layout: {args.top_layout}. Default is now row/horizontal.")
-    print(f"- Panel A legend position: x={legend_x:.3f}, y={legend_y:.3f}. Use --legend-y to move it up/down.")
-    print("- Panel B uses thin colored density curves with vertical mean guides.")
-    print("- Panel C legend is now a figure-level legend, so C and D keep the same height.")
-    print(f"- Panel C legend position: x={panel_c_legend_x:.3f}, y={panel_c_legend_y:.3f}. Use --panel-c-legend-y to move it up/down.")
-    print(f"- Panel C bar width: {args.panel_c_bar_width:.2f}. Use --panel-c-bar-width to make bars wider/narrower.")
-    print(f"- Panel C shows labels only for segments >= {PANEL_C_MIN_LABEL_VALUE:.0f}%.")
-    print("- Panel D reports values without percent signs above the bars, matching the reference.")
+        print(f"Saved PDF: {output.with_suffix('.pdf')}")
+    print(f"Projection method: {args.projection_method}")
+    print(f"Top-panel layout: {args.top_layout}")
+    print(f"Similarity sample limit: {args.sample_size}")
 
 
 if __name__ == "__main__":
