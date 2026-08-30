@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0",
+  "target_n": 2948,
+  "tolerance_n": 15,
+  "max_iterations": 16,
+  "n_jobs": 8,
+  "use_faiss": false,
+  "output_root": "matched_retention_mmseqs2_benchmark/n2948",
+  "all_sequences": {
+    "path": "pipelines/data/sequences.csv",
+    "id_column": "id",
+    "label_column": "label"
+  },
+  "mmseqs2": {
+    "name": "MMseqs2 min-seq-id 0.3",
+    "map_path": "reduced_homology/homology_mmseqs2_reduction/minseqid_03/map_mmseqs2.csv",
+    "reduced_path": "reduced_homology/homology_mmseqs2_reduction/minseqid_03/data_nr_mmseqs2.csv",
+    "report_path": "reduced_homology/homology_mmseqs2_reduction/minseqid_03/report_mmseqs2.json",
+    "expected_n": 2948,
+    "min_seq_id": 0.3,
+    "coverage": 0.8
+  },
+  "spaces": {
+    "ankh2_ext1": {
+      "label": "Ankh2-ext1",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/ankh2_ext1_embedding_distance_reduction",
+      "summary_path": "reduced_distance/ankh2_ext1_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/ankh2_ext1_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/ankh2_ext1_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/ankh2_ext1/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_5",
+      "above_level": "p99_9"
+    },
+    "esm2_t6_8M_UR50D": {
+      "label": "ESM2-t6",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/esm2_t6_8M_UR50D_embedding_distance_reduction",
+      "summary_path": "reduced_distance/esm2_t6_8M_UR50D_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/esm2_t6_8M_UR50D_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/esm2_t6_8M_UR50D_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/esm2_t6_8M_UR50D/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_5",
+      "above_level": "p99_9"
+    },
+    "esmc_300m": {
+      "label": "ESMC-300M",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/esmc_300m_embedding_distance_reduction",
+      "summary_path": "reduced_distance/esmc_300m_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/esmc_300m_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/esmc_300m_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/esmc_300m/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_5",
+      "above_level": "p99_9"
+    },
+    "mistral_Prot_v1_134M": {
+      "label": "Mistral-Prot",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/mistral_Prot_v1_134M_embedding_distance_reduction",
+      "summary_path": "reduced_distance/mistral_Prot_v1_134M_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/mistral_Prot_v1_134M_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/mistral_Prot_v1_134M_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/mistral_Prot_v1_134M/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_5",
+      "above_level": "p99_9"
+    },
+    "prot_bert": {
+      "label": "ProtBERT",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/prot_bert_embedding_distance_reduction",
+      "summary_path": "reduced_distance/prot_bert_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/prot_bert_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/prot_bert_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/prot_bert/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_5",
+      "above_level": "p99_9"
+    },
+    "prot_t5_xl_uniref50": {
+      "label": "ProtT5-XL",
+      "strategy": "embedding_cosine",
+      "reduction_root": "reduced_distance/prot_t5_xl_uniref50_embedding_distance_reduction",
+      "summary_path": "reduced_distance/prot_t5_xl_uniref50_embedding_distance_reduction/reduction_summary.csv",
+      "input_path": "reduced_distance/prot_t5_xl_uniref50_embedding_distance_reduction/full_data_with_biosieve_id.csv",
+      "ids_path": "reduced_distance/prot_t5_xl_uniref50_embedding_distance_reduction/ids.csv",
+      "embedding_path": "numerical_representation_data/antioxidant_proteins/sylphy_embedding/prot_t5_xl_uniref50/analysis/artifacts/training_embeddings.npy",
+      "below_level": "p99_0",
+      "above_level": "p99_5"
+    },
+    "onehot": {
+      "label": "One-hot",
+      "strategy": "descriptor_euclidean",
+      "reduction_root": "reduced_descriptor/antioxidant_proteins/onehot_descriptor_reduction",
+      "summary_path": "reduced_descriptor/antioxidant_proteins/onehot_descriptor_reduction/reduction_summary.csv",
+      "input_path": "numerical_representation_data/antioxidant_proteins/sylphy_one_hot/one_hot/full_data.csv",
+      "descriptor_prefix": "p_",
+      "below_level": "p90_0",
+      "above_level": "p95_0"
+    }
+  }
+}
