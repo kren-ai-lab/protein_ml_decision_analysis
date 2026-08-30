@@ -1,24 +1,23 @@
-# Snakemake configuration for the reduction workflow.
-# Edit dataset paths, available representations, and enabled reductions as needed.
+# Configuration for the dataset-reduction workflow.
+# Update paths and identifiers before running the workflow on a new dataset.
+# Relative paths are resolved from the directory where Snakemake is invoked.
 
 global:
-  # Base output directory and location of precomputed representations.
+  # Root directories for workflow outputs and precomputed representations.
   output_root: "../.."
   embedding_root: "../../numerical_representation_data"
 
-
 dataset:
-  # Input dataset and column names expected by the workflow.
-  name: "test"
-  input_data: "../data/test.csv"
+  # Dataset identifier, source file, and required column names.
+  name: "antioxidant_proteins"
+  input_data: "../data/sequences.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"
 
-
 representations:
-  # Representation entries used by reduction analyses.
-  # Expected path:
+  # Numerical representations available to the reduction strategies.
+  # Unless explicitly overridden, each representation is expected under:
   # <embedding_root>/<dataset.name>/<method>/<model_alias>/
   esm2_t6:
     label: "ESM2-8M"
@@ -27,7 +26,7 @@ representations:
     model_alias: "esm2_t6_8M_UR50D"
     prefix: "esm2_t6_8M_UR50D"
 
-  # Uncomment only if these representation files already exist.
+  # Additional representations can be enabled after their files have been generated.
   # prot_t5:
   #   label: "ProtT5-XL"
   #   method: "sylphy_embedding"
@@ -35,21 +34,22 @@ representations:
   #   model_alias: "prot_t5_xl_uniref50"
   #   prefix: "prot_t5"
 
-  # onehot:
-  #   label: "One-hot"
-  #   method: "sylphy_one_hot"
-  #   model: "one_hot"
-  #   model_alias: "one_hot"
-  #   prefix: "one_hot"
-  #   feature_prefix: "p_"
-  #   analysis:
-  #     embedding_npy: null
-
+  onehot:
+    label: "One-hot"
+    method: "sylphy_one_hot"
+    model: "one_hot"
+    model_alias: "one_hot"
+    prefix: "onehot"
+    feature_prefix: "p_"
+    analysis:
+      # Null values use the standard paths inferred by the Snakefile.
+      # Set an explicit path only when the upstream output layout differs.
+      percentiles_csv: null
 
 reductions:
   embedding_distance:
-    # Representation-aware reduction from percentile-based distance thresholds.
-    enabled: true
+    # Representation-aware reduction using percentile-derived similarity thresholds.
+    enabled: false
     representation_keys:
       - "esm2_t6"
       # - "prot_t5"
@@ -61,8 +61,8 @@ reductions:
     output_dir: null
 
   homology:
-    # Sequence-level redundancy reduction with MMseqs2 through BioSieve.
-    enabled: true
+    # Sequence-level redundancy reduction using MMseqs2 through BioSieve.
+    enabled: false
     label: "Homology MMseqs2"
     representation_key: "esm2_t6"
     experiment_name: "homology_mmseqs2_reduction"
@@ -74,28 +74,28 @@ reductions:
     extra_params: {}
     output_dir: null
 
-  # onehot_descriptor:
-  #   # Optional descriptor-based reduction for one-hot-style features.
-  #   enabled: true
-  #   label: "One-hot descriptor"
-  #   representation_key: "onehot"
-  #   experiment_name: "onehot_descriptor_reduction"
+  onehot_descriptor:
+    # Descriptor-based reduction using Euclidean distances between unscaled
+    # binary one-hot feature vectors.
+    enabled: true
+    label: "One-hot descriptor"
+    representation_key: "onehot"
+    experiment_name: "onehot_descriptor_reduction"
 
-  #   script: "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
-  #   biosieve_exec: "biosieve"
-  #   strategy: "descriptor_euclidean"
-  #   descriptor_prefix: "p_"
-  #   percentile_col: "percentile"
-  #   threshold_col: "similarity"
-  #   output_dir: null
-
+    script: "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
+    biosieve_exec: "biosieve"
+    strategy: "descriptor_euclidean"
+    descriptor_prefix: "p_"
+    percentile_col: "reduction_percentile"
+    threshold_col: "distance_threshold"
+    n_jobs: 8
+    output_dir: null
 
 analysis:
-  # Generate summary tables and figures from reduction outputs.
+  # Optional post-reduction summaries and figures.
   enabled: true
   script: "../../notebooks_and_scripts/scripts_for_pipelines/summary_reduction.py"
   output_dir: null
-
   general: true
   by_label: true
   fig_format: "png"

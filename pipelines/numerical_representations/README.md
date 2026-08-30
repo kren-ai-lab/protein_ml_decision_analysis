@@ -1,192 +1,150 @@
 # Numerical representations workflow
 
-This workflow generates numerical representations for protein or peptide sequences and, optionally, analyses the resulting feature space. It is the first computational stage of the full pipeline.
+This Snakemake workflow converts protein or peptide sequences into numerical features and optionally analyses the resulting representation space. It supports both pretrained protein language model embeddings and fixed-length one-hot encodings.
+
+The generated files provide standardized inputs for downstream workflows such as redundancy reduction, dataset partitioning, model training, and methodological analysis.
 
 ```text
-input dataset
-   ↓
+sequence dataset
+    |
+    v
 numerical_representations
-   ↓
-numerical_representation_data/<dataset>/<method>/<model_alias>/
+    |
+    +-- numerical feature matrix
+    +-- merged dataset and features
+    `-- optional representation-space analysis
+            |
+            +-- projections
+            +-- summary tables
+            +-- percentile tables
+            `-- figures
 ```
 
-The outputs from this workflow are used by downstream stages such as dataset reduction, split generation, and model training.
+## Supported representation methods
 
----
+| Method | Description | Primary feature file |
+| --- | --- | --- |
+| `sylphy_embedding` | Sequence-level embeddings generated with a pretrained protein language model | `embeddings.<format>` |
+| `sylphy_one_hot` | Fixed-length binary one-hot representation generated with Sylphy | `encoded.csv` |
 
-## 1. Objective
+The optional analysis stage is selected automatically from the active representation method:
 
-The `numerical_representations` workflow has two main objective:
+| Representation method | Analysis type | Operational percentile output |
+| --- | --- | --- |
+| `sylphy_embedding` | Cosine-similarity analysis | `<prefix>_similarity_percentiles.csv` |
+| `sylphy_one_hot` | Euclidean-distance analysis on unscaled binary vectors | `<prefix>_distance_reduction_thresholds.csv` |
 
-1. Generate numerical features from protein or peptide sequences.
-2. Optionally analyse the generated feature space.
+## Workflow location
 
-The workflow supports two representation methods:
-
-| Method | Description | Main outputs |
-|---|---|---|
-| `sylphy_embedding` | Protein language model embeddings generated with Sylphy | `embeddings.csv`, `full_data.csv` |
-| `sylphy_one_hot` | One-hot sequence encoding generated with Sylphy | `encoded.csv`, `full_data.csv` |
-
-The optional analysis step can generate PCA, UMAP, t-SNE projections, distance and similarity summaries, percentile tables, and figures describing the representation space.
-
----
-
-## 2. Workflow location
-
-This workflow should be located at:
+The expected workflow structure is:
 
 ```text
 pipelines/numerical_representations/
-├── Snakefile
-└── config/
-    └── config.yaml
+|-- Snakefile
+|-- README.md
+`-- config/
+    `-- config.yaml
 ```
 
-Run all commands from inside this folder unless stated otherwise.
+All relative paths in the default configuration assume that Snakemake is invoked from `pipelines/numerical_representations/`.
 
----
+## Requirements
 
-## 3. Input dataset
+The workflow requires:
 
-The input dataset must be placed in:
+- Python and Snakemake;
+- Sylphy and the project dependencies installed in the active environment;
+- an input CSV file containing sequence records; and
+- sufficient CPU, memory, and optional GPU resources for the selected representation.
 
-```text
-pipelines/data/<dataset>.csv
+Verify the main commands before running the workflow:
+
+```bash
+python --version
+python -m snakemake --version
+sylphy --help
 ```
 
-At minimum, it must contain:
+Embedding models may require additional dependencies and a compatible accelerator. One-hot generation can normally run on CPU.
 
-| Column | Description |
-|---|---|
-| `id` | Unique sequence identifier |
-| `sequence` | Protein or peptide sequence |
-| `label` | Target label used later for analysis, splitting, and training |
+## Input data contract
 
-Example:
+The workflow expects a CSV file with three configurable fields:
+
+| Configuration key | Expected content |
+| --- | --- |
+| `id_col` | Unique record identifier |
+| `sequence_col` | Protein or peptide sequence |
+| `label_col` | Target label retained for downstream analyses |
+
+Generic example:
 
 ```csv
-id,sequence,label
+record_id,sequence,target
 seq_001,ACDEFGHIK,1
 seq_002,LLVLLAAAG,0
 ```
 
-The column names are defined in the `dataset` block:
+The corresponding configuration would be:
 
 ```yaml
 dataset:
-  name: "test"
-  input_data: "../data/test.csv"
+  name: "dataset_name"
+  input_data: "../data/sequences.csv"
   sequence_col: "sequence"
-  id_col: "id"
-  label_col: "label"
+  id_col: "record_id"
+  label_col: "target"
 ```
 
-Changing `dataset.name` changes the output folder:
+The input file must contain one row per record. Identifiers should be unique, and sequence values should be compatible with the selected encoder or model.
 
-```text
-numerical_representation_data/<dataset.name>/
-```
+## Configuration
 
----
+The workflow loads `config/config.yaml` by default.
 
-## 4. How to run
-
-From the workflow directory:
-
-```bash
-cd pipelines/numerical_representations
-
-python -m snakemake \
-  --cores 8 \
-  --rerun-incomplete \
-  --latency-wait 60 \
-  -p
-```
-
-To preview what Snakemake would run without executing the workflow:
-
-```bash
-python -m snakemake -n -p
-```
-
----
-
-## 5. Main configuration blocks
-
-### 5.1 `global`
+### Output root
 
 ```yaml
 global:
   embedding_root: "../../numerical_representation_data"
 ```
 
-This controls where representation outputs are written.
-
-When running from:
+`embedding_root` defines where representation files and analysis outputs are stored. The default directory layout is:
 
 ```text
-pipelines/numerical_representations/
+<embedding_root>/<dataset_name>/<representation_method>/<model_alias>/
 ```
 
-the default relative path writes outputs to:
+An optional `global.analysis_root` can be provided when analysis outputs must be stored outside the representation directory.
 
-```text
-numerical_representation_data/
-```
-
----
-
-### 5.2 `dataset`
+### Dataset definition
 
 ```yaml
 dataset:
-  name: "test"
-  input_data: "../data/test.csv"
+  name: "dataset_name"
+  input_data: "../data/sequences.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"
 ```
 
-| Field | Meaning |
-|---|---|
-| `name` | Dataset name used in output paths |
-| `input_data` | Input CSV file |
+| Field | Description |
+| --- | --- |
+| `name` | Dataset identifier used in output paths |
+| `input_data` | Path to the input CSV file |
 | `sequence_col` | Column containing sequences |
-| `id_col` | Unique sequence identifier column |
-| `label_col` | Classification label column |
+| `id_col` | Column containing unique identifiers |
+| `label_col` | Column containing target labels |
 
----
+### Representation stage
 
-### 5.3 `representation`
-
-This block controls whether and how numerical representations are generated.
-
-Example for protein language model embeddings:
-
-```yaml
-representation:
-  enabled: true
-  run_representation: true
-  method: "sylphy_embedding"
-
-  model: "facebook/esm2_t6_8M_UR50D"
-  model_alias: "esm2_t6_8M_UR50D"
-  device: "cuda"
-  precision: "fp32"
-  batch_size: 16
-  max_length: null
-  output_format: "csv"
-```
-
-Example for one-hot encoding:
+The `representation` section controls feature generation and reuse.
 
 ```yaml
 representation:
   enabled: true
   run_representation: true
   method: "sylphy_one_hot"
-
   model: "one_hot"
   model_alias: "one_hot"
   encoder: "one_hot"
@@ -194,78 +152,153 @@ representation:
   output_format: "csv"
 ```
 
-Important fields:
+| Field | Description |
+| --- | --- |
+| `enabled` | Includes the representation-derived `full_data.csv` in the requested workflow targets |
+| `run_representation` | Generates features when `true`; reuses an existing feature file when `false` |
+| `method` | `sylphy_embedding` or `sylphy_one_hot` |
+| `model` | Model identifier for embeddings or representation name for one-hot encoding |
+| `model_alias` | Filesystem-safe directory name |
+| `encoder` | Sylphy encoder used by one-hot generation |
+| `device` | Execution device for embedding generation, such as `cuda` or `cpu` |
+| `precision` | Numerical precision used by the embedding model |
+| `batch_size` | Number of sequences processed per embedding batch |
+| `max_length` | Optional maximum sequence length |
+| `output_format` | `csv` or `parquet` for embedding outputs |
 
-| Field | Meaning |
-|---|---|
-| `enabled` | Enables or disables the representation stage |
-| `run_representation` | If `true`, compute the representation; if `false`, reuse existing files |
-| `method` | Representation method: `sylphy_embedding` or `sylphy_one_hot` |
-| `model` | Sylphy/Hugging Face model name for embeddings |
-| `model_alias` | Folder-safe name used in output paths |
-| `device` | Usually `cuda` for GPU or `cpu` for CPU |
-| `precision` | Usually `fp32` or `fp16` |
-| `batch_size` | Number of sequences per batch |
-| `max_length` | Maximum sequence length when required |
-| `output_format` | Usually `csv` |
+#### Protein language model embeddings
 
-> Important: do not use `method: "sylphy_embedding"` with `model: "one_hot"`. One-hot is an encoder, not a protein language model.
+```yaml
+representation:
+  enabled: true
+  run_representation: true
+  method: "sylphy_embedding"
+  model: "provider/model_name"
+  model_alias: "model_name"
+  device: "cuda"
+  precision: "fp32"
+  batch_size: 16
+  max_length: null
+  output_format: "csv"
+```
 
----
+For this method, Sylphy creates `embeddings.csv` or `embeddings.parquet`, depending on `output_format`.
 
-### 5.4 `analysis`
+#### One-hot encoding
 
-This block controls the optional analysis of the representation space.
+```yaml
+representation:
+  enabled: true
+  run_representation: true
+  method: "sylphy_one_hot"
+  model: "one_hot"
+  model_alias: "one_hot"
+  encoder: "one_hot"
+  max_length: 1024
+  output_format: "csv"
+```
+
+For this method, Sylphy creates `encoded.csv` containing binary feature columns.
+
+### Reusing an existing representation
+
+Set `run_representation: false` when the feature file already exists:
+
+```yaml
+representation:
+  enabled: true
+  run_representation: false
+```
+
+The workflow treats the expected representation file as an external input and rebuilds `full_data.csv` only when necessary. This avoids recomputing expensive representations.
+
+Expected feature files:
+
+```text
+<representation_dir>/embeddings.<format>  # sylphy_embedding
+<representation_dir>/encoded.csv         # sylphy_one_hot
+```
+
+### Representation-space analysis
 
 ```yaml
 analysis:
   enabled: true
-  script: "../../notebooks_and_scripts/scripts_for_pipelines/embedding_analysis_space.py"
-
+  scripts:
+    embedding_cosine: "../../notebooks_and_scripts/scripts_for_pipelines/embedding_analysis_space.py"
+    descriptor_euclidean: "../../notebooks_and_scripts/scripts_for_pipelines/descriptor_euclidean_analysis_space.py"
+  output_dir: null
   feature_prefix: "p_"
-  prefix: "esm2_t6_8M_UR50D"
+  prefix: null
   random_state: 42
-
   tsne_perplexity: 30.0
   tsne_max_iter: 1000
-
   umap_neighbors: 15
   umap_min_dist: 0.1
   umap_metric: "euclidean"
-
   scaling_strategy: "none"
+  working_memory_mb: 512
+  n_jobs: 8
+  plot_sample_size: 200000
+  pairwise_csv_chunk_size: 500000
+  save_pairwise_values: true
 ```
 
-| Field | Meaning |
-|---|---|
-| `enabled` | Enables or disables the analysis step |
-| `script` | Path to the analysis script |
-| `feature_prefix` | Prefix used for feature columns, especially one-hot descriptors |
-| `prefix` | Prefix used in analysis output filenames |
-| `random_state` | Random seed for stochastic methods |
-| `tsne_perplexity` | t-SNE perplexity; should be smaller than the number of samples |
+| Field | Description |
+| --- | --- |
+| `enabled` | Enables representation-space analysis |
+| `scripts.embedding_cosine` | Script used for protein language model embeddings |
+| `scripts.descriptor_euclidean` | Script used for one-hot descriptors |
+| `output_dir` | Optional explicit analysis directory; `null` uses `<representation_dir>/analysis` |
+| `feature_prefix` | Prefix identifying feature columns in `full_data.csv` |
+| `prefix` | Prefix for generated filenames; `null` uses `model_alias` |
+| `random_state` | Seed for stochastic dimensionality-reduction methods |
+| `tsne_perplexity` | t-SNE perplexity; it must be smaller than the number of samples |
 | `tsne_max_iter` | Maximum number of t-SNE iterations |
-| `umap_neighbors` | Number of UMAP neighbors |
-| `umap_min_dist` | Minimum UMAP distance |
-| `umap_metric` | UMAP distance metric |
-| `scaling_strategy` | Scaling strategy applied before analysis |
+| `umap_neighbors` | Number of neighbors used by UMAP |
+| `umap_min_dist` | Minimum-distance parameter used by UMAP |
+| `umap_metric` | Distance metric used by UMAP |
+| `scaling_strategy` | Feature-scaling policy used before analysis |
+| `working_memory_mb` | Approximate memory budget for Euclidean-distance chunks |
+| `n_jobs` | Number of parallel descriptor-analysis jobs |
+| `plot_sample_size` | Maximum reproducible pairwise sample used for plotting |
+| `pairwise_csv_chunk_size` | Rows written per pairwise-output chunk |
+| `save_pairwise_values` | Controls whether complete pairwise-value tables are written |
 
-The `prefix` is important because downstream reduction workflows expect files such as:
+The Snakefile selects the analysis script according to `representation.method`. A legacy configuration can alternatively provide one explicit `analysis.script` value.
+
+## Distance and similarity conventions
+
+### Embedding representations
+
+Embedding analysis uses cosine similarity. The operational percentile table for downstream representation-aware reduction is:
 
 ```text
 analysis/tables/<prefix>_similarity_percentiles.csv
-analysis/tables/<prefix>_distance_percentiles.csv
 ```
 
----
+### One-hot representations
 
-## 6. Execution modes
+One-hot descriptor analysis uses Euclidean distances calculated directly from unscaled binary vectors. Consequently:
 
-The workflow can be used in three common modes.
+- `analysis.scaling_strategy` must be `none`;
+- Euclidean distance is not derived from cosine similarity;
+- descriptive and operational percentile tables are stored separately; and
+- cosine similarity may still be calculated independently for descriptive comparisons.
 
-### Mode A: Generate a representation and analyse it
+The principal one-hot tables are:
 
-Use this when running a representation for the first time.
+| File | Purpose |
+| --- | --- |
+| `<prefix>_distance_percentiles.csv` | Descriptive Euclidean-distance percentiles |
+| `<prefix>_distance_reduction_thresholds.csv` | Complementary-percentile thresholds for downstream reduction |
+| `<prefix>_similarity_percentiles.csv` | Descriptive cosine-similarity percentiles |
+
+The reduction-ready table maps a reduction label `p` to the complementary distance percentile `100 - p`. For example, `p30` uses distance percentile `q70`. This convention preserves a consistent ordering from stronger to weaker filtering conditions.
+
+## Workflow execution modes
+
+### Generate features and run analysis
 
 ```yaml
 representation:
@@ -276,20 +309,9 @@ analysis:
   enabled: true
 ```
 
-This mode creates the numerical representation and then runs the analysis step.
+This mode generates the feature matrix, builds `full_data.csv`, and analyses the representation space.
 
-Use it when:
-
-- the representation does not exist yet;
-- you want figures and summary tables;
-- you need percentile tables for downstream reduction;
-- you want to inspect the numerical space before splitting or training.
-
----
-
-### Mode B: Reuse an existing representation and only run analysis
-
-Use this when the representation already exists and you only want to regenerate analysis outputs.
+### Reuse features and run analysis
 
 ```yaml
 representation:
@@ -300,27 +322,9 @@ analysis:
   enabled: true
 ```
 
-Use it when:
+This mode uses an existing feature file, rebuilds `full_data.csv` when needed, and runs the analysis stage.
 
-- embeddings or one-hot features were already generated;
-- only analysis parameters changed;
-- you want to avoid recomputing expensive embeddings;
-- you need updated figures, tables, or percentile files.
-
-Expected existing files:
-
-```text
-numerical_representation_data/<dataset>/<method>/<model_alias>/
-├── full_data.csv
-├── embeddings.csv    # for sylphy_embedding
-└── encoded.csv       # for sylphy_one_hot
-```
-
----
-
-### Mode C: Generate features without analysis
-
-Use this when you only need the numerical features.
+### Generate features without analysis
 
 ```yaml
 representation:
@@ -331,80 +335,26 @@ analysis:
   enabled: false
 ```
 
-Use it when:
+This mode stops after producing the representation and merged dataset.
 
-- you only need `full_data.csv`;
-- you want a faster run;
-- you do not need PCA, UMAP, t-SNE, or percentile tables yet;
-- you plan to run the analysis later.
+At least one final target must be enabled. If both stages are disabled, the workflow stops during initialization.
 
----
+## Running the workflow
 
-## 7. Output structure
-
-For protein language model embeddings:
-
-```text
-numerical_representation_data/
-└── <dataset>/
-    └── sylphy_embedding/
-        └── <model_alias>/
-            ├── embeddings.csv
-            ├── full_data.csv
-            └── analysis/
-                ├── analysis.done
-                ├── artifacts/
-                │   └── training_embeddings.npy
-                ├── figures/
-                ├── reduced_embeddings/
-                └── tables/
-```
-
-For one-hot encoding:
-
-```text
-numerical_representation_data/
-└── <dataset>/
-    └── sylphy_one_hot/
-        └── one_hot/
-            ├── encoded.csv
-            ├── full_data.csv
-            └── analysis/
-                ├── analysis.done
-                ├── artifacts/
-                │   └── training_embeddings.npy
-                ├── figures/
-                ├── reduced_embeddings/
-                └── tables/
-```
-
----
-## 10. Using a new dataset
-
-1. Add the dataset file:
-
-```text
-pipelines/data/my_dataset.csv
-```
-
-2. Update the `dataset` block:
-
-```yaml
-dataset:
-  name: "my_dataset"
-  input_data: "../data/my_dataset.csv"
-  sequence_col: "sequence"
-  id_col: "id"
-  label_col: "label"
-```
-
-3. Choose the representation method.
-
-4. Run the workflow:
+Preview the planned jobs:
 
 ```bash
-cd pipelines/numerical_representations
+python -m snakemake \
+  --cores 8 \
+  --dry-run \
+  --rerun-incomplete \
+  --latency-wait 60 \
+  -p
+```
 
+Execute the workflow:
+
+```bash
 python -m snakemake \
   --cores 8 \
   --rerun-incomplete \
@@ -412,8 +362,131 @@ python -m snakemake \
   -p
 ```
 
-5. Check that outputs were created under:
+Use an alternative configuration file:
+
+```bash
+python -m snakemake \
+  --configfile path/to/config.yaml \
+  --cores 8 \
+  --rerun-incomplete \
+  --latency-wait 60 \
+  -p
+```
+
+## Command-line overrides
+
+Configuration values can be overridden without modifying the YAML file. Nested fields use the `section__parameter` convention:
+
+```bash
+python -m snakemake \
+  --config representation__batch_size=8 analysis__enabled=true \
+  --cores 8 \
+  -p
+```
+
+The Snakefile converts common Boolean, null, integer, and floating-point values to their corresponding Python types.
+
+## Output structure
+
+### Embedding representation
 
 ```text
-numerical_representation_data/my_dataset/
+numerical_representation_data/<dataset_name>/sylphy_embedding/<model_alias>/
+|-- embeddings.<format>
+|-- full_data.csv
+`-- analysis/
+    |-- analysis.done
+    |-- artifacts/
+    |   `-- training_embeddings.npy
+    |-- figures/
+    |-- reduced_embeddings/
+    `-- tables/
 ```
+
+### One-hot representation
+
+```text
+numerical_representation_data/<dataset_name>/sylphy_one_hot/<model_alias>/
+|-- encoded.csv
+|-- full_data.csv
+`-- analysis/
+    |-- analysis.done
+    |-- artifacts/
+    |   `-- training_embeddings.npy
+    |-- figures/
+    |-- reduced_embeddings/
+    `-- tables/
+```
+
+The analysis scripts may generate additional method-specific tables and figures. Filenames identify whether outputs contain cosine similarity, Euclidean distance, projections, configuration summaries, or pair-type statistics.
+
+Complete pairwise-value tables can be large because they may contain one row for every unique sequence pair. Disable them with `save_pairwise_values: false` when only summaries and figures are required.
+
+## Data assembly behavior
+
+The `build_full_data` rule:
+
+1. loads the original dataset and representation table;
+2. verifies the required input columns;
+3. verifies that both tables contain the same number of rows;
+4. removes representation columns already present in the original dataset;
+5. concatenates both tables by row order; and
+6. writes `full_data.csv` without duplicated columns.
+
+The workflow assumes that the representation file preserves the same record order as the input dataset. A matching row count does not independently prove identifier alignment, so upstream generation should not reorder records.
+
+## Completion markers
+
+The representation-analysis rule creates:
+
+```text
+analysis/analysis.done
+```
+
+Snakemake uses this file as the completion marker for the analysis stage. Removing it causes the analysis rule to become eligible for execution again when requested.
+
+## Troubleshooting
+
+### Required columns are missing
+
+Confirm that `sequence_col`, `id_col`, and `label_col` match the input CSV header.
+
+### Representation file is missing
+
+If `run_representation` is `false`, confirm that the expected `encoded.csv` or `embeddings.<format>` file already exists. Otherwise, set `run_representation: true`.
+
+### Input and representation row counts differ
+
+Regenerate the representation from the current input dataset and confirm that no filtering or reordering occurred between stages.
+
+### Unsupported representation method
+
+Use exactly `sylphy_embedding` or `sylphy_one_hot` unless the Snakefile has been extended to support another method.
+
+### One-hot analysis rejects the scaling strategy
+
+Set:
+
+```yaml
+analysis:
+  scaling_strategy: "none"
+```
+
+The operational Euclidean thresholds must be calculated in the same unscaled binary space used by downstream reduction.
+
+### Analysis script is not configured
+
+Confirm that `analysis.scripts` contains the entry selected by the active representation method, or supply an explicit `analysis.script`.
+
+### Analysis outputs are too large
+
+Set `save_pairwise_values: false`, reduce `plot_sample_size`, or adjust `pairwise_csv_chunk_size`. Summary statistics and figures can still be generated without preserving all pairwise rows.
+
+## Reproducibility recommendations
+
+- Preserve the configuration file used for each run.
+- Record the repository commit or release tag associated with the outputs.
+- Use fixed dependency versions in the project environment.
+- Run a Snakemake dry run before launching computationally intensive jobs.
+- Keep `full_data.csv`, analysis tables, and completion markers with the corresponding metadata.
+- Avoid editing generated files manually; regenerate them from the recorded configuration instead.

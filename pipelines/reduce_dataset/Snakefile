@@ -1,18 +1,21 @@
-# Unified data-reduction workflow for protein-sequence ML experiments.
+# Unified dataset-reduction workflow for sequence-based machine-learning pipelines.
 #
 # This workflow can run any combination of:
-#   1) embedding-distance reduction from one or more embedding spaces
-#   2) homology reduction with Biosieve/MMseqs2
-#   3) one-hot descriptor/euclidean reduction
+#   1) representation-aware reduction in one or more embedding spaces;
+#   2) homology reduction with BioSieve and MMseqs2; and
+#   3) descriptor-based reduction using Euclidean distance on one-hot vectors.
 #
-# It assumes the numerical_representations workflow has already created:
+# The workflow expects the numerical-representation stage to have created:
 #   numerical_representation_data/<dataset>/<method>/<model_alias>/full_data.csv
 #   numerical_representation_data/<dataset>/<method>/<model_alias>/analysis/tables/<prefix>_similarity_percentiles.csv
+#     for embedding representations, or
+#   numerical_representation_data/<dataset>/<method>/<model_alias>/analysis/tables/<prefix>_distance_reduction_thresholds.csv
+#     for one-hot Euclidean reduction thresholds, and
 #   numerical_representation_data/<dataset>/<method>/<model_alias>/analysis/artifacts/training_embeddings.npy
 #
-# The representation paths are inferred from a compact config, but can still be
-# overridden explicitly with full_data, analysis.output_dir, analysis.percentiles_csv,
-# or analysis.embedding_npy if needed.
+# Standard paths are inferred from config/config.yaml. Individual paths can be
+# overridden with full_data, analysis.output_dir, analysis.percentiles_csv, or
+# analysis.embedding_npy when the upstream directory layout is different.
 
 configfile: "config/config.yaml"
 
@@ -130,10 +133,7 @@ def rep_cfg_by_key(rep_key):
 
 
 def rep_analysis_cfg_by_key(rep_key):
-    # Supports both compact style:
-    #   representations.x.prefix: esm2_t6
-    # and explicit style:
-    #   representations.x.analysis.prefix: esm2_t6
+    # Analysis-specific values override representation-level defaults.
     return rep_cfg_by_key(rep_key).get("analysis", {})
 
 
@@ -189,10 +189,16 @@ def analysis_dir_by_key(rep_key):
 def percentiles_file_by_key(rep_key):
     analysis_cfg = rep_analysis_cfg_by_key(rep_key)
     prefix = analysis_prefix_by_key(rep_key)
-    return analysis_cfg.get(
-        "percentiles_csv",
-        str(Path(analysis_dir_by_key(rep_key)) / "tables" / f"{prefix}_similarity_percentiles.csv")
-    )
+    explicit = analysis_cfg.get("percentiles_csv")
+    if explicit:
+        return explicit
+
+    if representation_method_by_key(rep_key) == "sylphy_one_hot":
+        filename = f"{prefix}_distance_reduction_thresholds.csv"
+    else:
+        filename = f"{prefix}_similarity_percentiles.csv"
+
+    return str(Path(analysis_dir_by_key(rep_key)) / "tables" / filename)
 
 
 def embedding_npy_file_by_key(rep_key):
@@ -225,8 +231,8 @@ def experiment_name(kind, rep_key=None):
                 prefix=analysis_prefix_by_key(rep_key),
             )
 
-        # If a fixed experiment_name is supplied for embedding_distance, prefix it
-        # with the representation key to avoid overwriting outputs across spaces.
+        # Prefix fixed experiment names with the representation key so that
+        # outputs from different representation spaces remain distinct.
         fixed_name = cfg.get("experiment_name")
         if fixed_name:
             return f"{rep_key}_{fixed_name}"
@@ -265,7 +271,7 @@ def embedding_distance_experiment_pattern():
 
     template = cfg.get("experiment_name_template")
     if template:
-        # For Snakemake patterns, use {rep_key} as the wildcard.
+        # Preserve the representation key as a Snakemake wildcard.
         return str(template).format(
             rep_key="{rep_key}",
             representation_key="{rep_key}",
@@ -567,10 +573,10 @@ if analysis_enabled():
 
 if is_enabled("embedding_distance"):
 
-    # The default output naming is stable and dataset-safe:
+    # Default output layout:
     #   reduced_distance/<dataset>/<rep_key>_embedding_distance_reduction/
-    # If you use output_dir or experiment_name_template in the config, keep {rep_key}
-    # in the folder name when running multiple representations to avoid overwrites.
+    # Custom output templates should retain {rep_key} when multiple
+    # representations are enabled to prevent output collisions.
     EMBED_EXPERIMENT_PATTERN = embedding_distance_experiment_pattern()
     EMBED_SUMMARY_PATTERN = str(
         Path(OUTPUT_ROOT) / "reduced_distance" / DATASET_NAME / EMBED_EXPERIMENT_PATTERN / "reduction_summary.csv"
@@ -579,8 +585,8 @@ if is_enabled("embedding_distance"):
         Path(OUTPUT_ROOT) / "reduced_distance" / DATASET_NAME / EMBED_EXPERIMENT_PATTERN / "reduction_metadata.json"
     )
 
-    # If the user provided an explicit template, use it as a Snakemake pattern.
-    # This supports output_dir placeholders: {output_root}, {dataset}, {rep_key}, {kind}.
+    # Convert an explicit output template into a Snakemake output pattern.
+    # Supported placeholders include {output_root}, {dataset}, {rep_key}, and {kind}.
     if reduction_cfg("embedding_distance").get("output_dir"):
         configured_pattern = str(reduction_cfg("embedding_distance")["output_dir"]).format(
             output_root=OUTPUT_ROOT,
@@ -655,7 +661,7 @@ if is_enabled("embedding_distance"):
 
 
 # -------------------------------------------------------------------------
-# One-hot descriptor/euclidean reduction
+# One-hot descriptor reduction using Euclidean distance
 # -------------------------------------------------------------------------
 
 if is_enabled("onehot_descriptor"):
@@ -663,32 +669,40 @@ if is_enabled("onehot_descriptor"):
     rule reduce_onehot_descriptor:
         input:
             full_data=lambda wc: full_data_file_by_key(onehot_rep_key()),
-            percentiles=lambda wc: percentiles_file_by_key(onehot_rep_key())
+            percentiles=lambda wc: percentiles_file_by_key(onehot_rep_key()),
+            script=lambda wc: reduction_cfg("onehot_descriptor").get(
+                "script",
+                "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
+            )
         output:
             summary=reduction_summary_file("onehot_descriptor")
         params:
             output_dir=lambda wc: reduction_root_dir("onehot_descriptor"),
-            script=lambda wc: reduction_cfg("onehot_descriptor").get(
-                "script",
-                "../../notebooks_and_scripts/scripts_for_pipelines/run_descriptor_euclidean_reduction.py"
-            ),
             biosieve_exec=lambda wc: reduction_cfg("onehot_descriptor").get("biosieve_exec", "biosieve"),
             strategy=lambda wc: reduction_cfg("onehot_descriptor").get("strategy", "descriptor_euclidean"),
             descriptor_prefix=lambda wc: reduction_cfg("onehot_descriptor").get(
                 "descriptor_prefix",
                 feature_prefix_by_key(onehot_rep_key())
             ),
-            percentile_col=lambda wc: reduction_cfg("onehot_descriptor").get("percentile_col", "percentile"),
-            threshold_col=lambda wc: reduction_cfg("onehot_descriptor").get("threshold_col", "similarity")
+            percentile_col=lambda wc: reduction_cfg("onehot_descriptor").get(
+                "percentile_col", "reduction_percentile"
+            ),
+            threshold_col=lambda wc: reduction_cfg("onehot_descriptor").get(
+                "threshold_col", "distance_threshold"
+            ),
+            n_jobs=lambda wc: int(reduction_cfg("onehot_descriptor").get("n_jobs", 1))
         run:
             assert_file_exists(input.full_data, "full_data.csv")
-            assert_file_exists(input.percentiles, "similarity percentiles CSV")
-            assert_file_exists(params.script, "descriptor-euclidean reduction script")
+            assert_file_exists(
+                input.percentiles,
+                "complementary Euclidean reduction-thresholds CSV",
+            )
+            assert_file_exists(input.script, "descriptor-euclidean reduction script")
 
             Path(params.output_dir).mkdir(parents=True, exist_ok=True)
 
             cmd = [
-                "python", params.script,
+                "python", input.script,
                 "--percentiles-csv", input.percentiles,
                 "--input-data", input.full_data,
                 "--output-dir", params.output_dir,
@@ -697,6 +711,7 @@ if is_enabled("onehot_descriptor"):
                 "--descriptor-prefix", params.descriptor_prefix,
                 "--percentile-col", params.percentile_col,
                 "--threshold-col", params.threshold_col,
+                "--n-jobs", str(params.n_jobs),
             ]
             run_command(cmd)
 
@@ -714,7 +729,7 @@ if is_enabled("onehot_descriptor"):
 
 
 # -------------------------------------------------------------------------
-# Homology reduction with MMseqs2/Biosieve
+# Homology reduction with BioSieve and MMseqs2
 # -------------------------------------------------------------------------
 
 if is_enabled("homology"):

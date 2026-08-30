@@ -18,9 +18,10 @@ def parse_args():
     parser.add_argument("--biosieve-exec", default="biosieve")
     parser.add_argument("--strategy", default="descriptor_euclidean")
 
-    parser.add_argument("--percentile-col", default="percentile")
-    parser.add_argument("--threshold-col", default="similarity")
+    parser.add_argument("--percentile-col", default="reduction_percentile")
+    parser.add_argument("--threshold-col", default="distance_threshold")
     parser.add_argument("--descriptor-prefix", default="p_")
+    parser.add_argument("--n-jobs", type=int, default=1)
 
     parser.add_argument("--id-col", default="id")
     parser.add_argument("--label-col", default="label")
@@ -56,13 +57,66 @@ def main():
     if args.threshold_col not in df_percentiles.columns:
         raise ValueError(f"Column '{args.threshold_col}' not found.")
 
+    if args.n_jobs < 1:
+        raise ValueError("--n-jobs must be >= 1.")
+
+    descriptor_cols = [
+        column for column in df_original.columns
+        if str(column).startswith(args.descriptor_prefix)
+    ]
+    if not descriptor_cols:
+        raise ValueError(
+            f"No descriptor columns start with '{args.descriptor_prefix}'."
+        )
+
     summary_rows = []
 
-    df_percentiles = df_percentiles.sort_values(args.percentile_col)
+    df_percentiles[args.percentile_col] = pd.to_numeric(
+        df_percentiles[args.percentile_col],
+        errors="raise",
+    )
+    df_percentiles[args.threshold_col] = pd.to_numeric(
+        df_percentiles[args.threshold_col],
+        errors="raise",
+    )
+    df_percentiles = df_percentiles.sort_values(args.percentile_col).reset_index(
+        drop=True
+    )
+
+    if df_percentiles[args.percentile_col].duplicated().any():
+        raise ValueError(
+            f"Column '{args.percentile_col}' contains duplicated reduction labels."
+        )
+
+    if not df_percentiles[args.threshold_col].is_monotonic_decreasing:
+        raise ValueError(
+            "Euclidean reduction thresholds must be non-increasing from the "
+            "lowest reduction-percentile label to the highest. Expected p30 "
+            "to use a radius greater than or equal to p40, and so on. Check "
+            "that the input is the complementary "
+            "distance_reduction_thresholds.csv table."
+        )
+
+    if "distance_percentile" in df_percentiles.columns:
+        distance_percentiles = pd.to_numeric(
+            df_percentiles["distance_percentile"],
+            errors="raise",
+        )
+        expected = 100.0 - df_percentiles[args.percentile_col]
+        if not (distance_percentiles - expected).abs().le(1e-8).all():
+            raise ValueError(
+                "Column 'distance_percentile' must equal "
+                "100 - reduction_percentile for every row."
+            )
 
     for _, row in df_percentiles.iterrows():
         percentile = row[args.percentile_col]
         threshold = float(row[args.threshold_col])
+
+        if not pd.notna(threshold) or threshold < 0:
+            raise ValueError(
+                f"Invalid Euclidean threshold for percentile {percentile}: {threshold}"
+            )
 
         run_name = sanitize_percentile(percentile)
         run_dir = output_dir / run_name
@@ -78,6 +132,11 @@ def main():
             "descriptor_euclidean": {
                 "threshold": threshold,
                 "descriptor_prefix": args.descriptor_prefix,
+                # The thresholds were calculated on the raw binary one-hot
+                # vectors, so BioSieve must use exactly the same unscaled space.
+                "standardize": False,
+                "metric": "euclidean",
+                "n_jobs": args.n_jobs,
             }
         }
 
@@ -130,6 +189,9 @@ def main():
         summary_rows.append({
             "percentile": percentile,
             "threshold": threshold,
+            "metric": "euclidean",
+            "standardize": False,
+            "n_jobs": args.n_jobs,
             "run_dir": str(run_dir),
             "reduced_file": str(reduced_csv),
             "reduced_labeled_file": str(reduced_labeled_csv),

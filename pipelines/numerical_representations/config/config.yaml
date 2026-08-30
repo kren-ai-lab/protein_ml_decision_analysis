@@ -1,63 +1,75 @@
+# Configuration for the numerical-representations workflow.
+# Update dataset fields and representation parameters before execution.
+# Relative paths are resolved from the directory where Snakemake is invoked.
+
 global:
+  # Root directory for generated numerical representations.
   embedding_root: "../../numerical_representation_data"
 
 dataset:
-  name: "antioxidant_proteins_full_consensus"
-  input_data: "../data/sequences_full_consensus.csv"
+  # Dataset identifier, input file, and required column names.
+  name: "antioxidant_proteins"
+  input_data: "../data/sequences.csv"
   sequence_col: "sequence"
   id_col: "id"
   label_col: "label"
 
 representation:
+  # Enable this stage and choose whether features should be generated or reused.
   enabled: true
-
-  # true  = generate the representation if it does not exist
-  # false = reuse an existing representation and only rebuild full_data if needed
   run_representation: true
 
-  # Use one of:
-  #method: "sylphy_one_hot"
-  method: "sylphy_embedding"
+  # Supported methods: sylphy_one_hot and sylphy_embedding.
+  method: "sylphy_one_hot"
 
-  # For one-hot:
-  #model: "one_hot"
-  #model_alias: "one_hot"
-  #encoder: "one_hot"
-  #max_length: 1024
+  # Parameters for one-hot encoding.
+  model: "one_hot"
+  model_alias: "one_hot"
+  encoder: "one_hot"
+  max_length: 1024
 
-  # For embeddings:
-  model: "facebook/esm2_t6_8M_UR50D"
-  model_alias: "esm2_t6_8M_UR50D"
-  device: "cuda"
-  precision: "fp32"
-  batch_size: 16
-
-  # Important: leave as null for embeddings unless Sylphy supports/needs --max-length.
-  # The fixed Snakefile only passes --max-length when this value is not null.
-  max_length: null
+  # Example parameters for a protein language model. Replace the values and
+  # change method to sylphy_embedding when generating embedding features.
+  # model: "provider/model_name"
+  # model_alias: "model_name"
+  # device: "cuda"
+  # precision: "fp32"
+  # batch_size: 16
+  # max_length: null
 
   output_format: "csv"
 
 analysis:
+  # Enable representation-space summaries, projections, and percentile tables.
   enabled: true
 
-  # Script that analyses the numerical space: PCA, UMAP, t-SNE,
-  # cosine similarity distribution and percentiles.
-  script: "../../notebooks_and_scripts/scripts_for_pipelines/embedding_analysis_space.py"
+  # The Snakefile selects the analysis script from representation.method.
+  scripts:
+    embedding_cosine: "../../notebooks_and_scripts/scripts_for_pipelines/embedding_analysis_space.py"
+    descriptor_euclidean: "../../notebooks_and_scripts/scripts_for_pipelines/descriptor_euclidean_analysis_space.py"
 
-  # Optional. If omitted, outputs go to:
-  # <representation_dir>/analysis
-  # output_dir: "../../analysed_embedding_space/antioxidant_proteins/esm2_t6_8M_UR50D"
+  # Null uses <representation_dir>/analysis. Set an explicit path only when
+  # the standard output layout is not appropriate.
+  output_dir: null
 
+  # Feature and output naming.
   feature_prefix: "p_"
-  prefix: "esm2_t6_8M_UR50D"
-  random_state: 42
+  prefix: null
 
+  # Reproducibility and dimensionality-reduction parameters.
+  random_state: 42
   tsne_perplexity: 30.0
   tsne_max_iter: 1000
-
   umap_neighbors: 15
   umap_min_dist: 0.1
   umap_metric: "euclidean"
 
+  # One-hot Euclidean analysis must use unscaled binary features.
   scaling_strategy: "none"
+
+  # Resource and output controls used by descriptor-based analysis.
+  working_memory_mb: 512
+  n_jobs: 8
+  plot_sample_size: 200000
+  pairwise_csv_chunk_size: 500000
+  save_pairwise_values: true

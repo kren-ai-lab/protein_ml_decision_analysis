@@ -1,3 +1,7 @@
+# Numerical-representations workflow for protein or peptide sequence datasets.
+# Configuration is loaded from config/config.yaml and may be overridden from
+# the command line using section__parameter keys.
+
 configfile: "config/config.yaml"
 
 from pathlib import Path
@@ -7,34 +11,24 @@ import subprocess
 import pandas as pd
 
 
-# ============================================================
-# CONFIG OVERRIDES
-# ============================================================
-# Base configuration comes from config/config.yaml.
-# SLURM/grid-specific values can override it through Snakemake CLI:
+# -------------------------------------------------------------------------
+# Command-line configuration overrides
+# -------------------------------------------------------------------------
+# Nested configuration values can be overridden through the Snakemake CLI:
 #
-# snakemake --config representation__model="Rostlab/prot_bert" \
-#                    representation__model_alias="prot_bert" \
+# python -m snakemake --config representation__model="provider/model_name" \
+#                    representation__model_alias="model_name" \
 #                    representation__batch_size=8 \
 #                    analysis__enabled=true
 #
-# Convention:
-#   section__parameter=value
-# becomes:
-#   config[section][parameter] = value
-#
-# Example:
-#   representation__model=facebook/esm2_t12_35M_UR50D
-# becomes:
-#   representation:
-#     model: facebook/esm2_t12_35M_UR50D
-# ============================================================
+# The key section__parameter=value is applied as
+# config[section][parameter] = value after type conversion.
 
 VALID_OVERRIDE_SECTIONS = {"global", "dataset", "representation", "analysis"}
 
 
 def parse_override_value(value):
-    """Cast values passed from --config or a SLURM grid."""
+    """Convert a command-line configuration value to a basic Python type."""
     if value is None:
         return None
 
@@ -67,10 +61,7 @@ def parse_override_value(value):
 
 
 def apply_section_overrides(cfg):
-    """
-    Apply CLI overrides using keys like representation__model or analysis__enabled.
-    This allows the same Snakefile to be configured from config.yaml or a SLURM grid.
-    """
+    """Apply section__parameter overrides supplied through the Snakemake CLI."""
     for key, value in list(cfg.items()):
         if "__" not in key:
             continue
@@ -97,9 +88,9 @@ def apply_section_overrides(cfg):
 apply_section_overrides(config)
 
 
-# ============================================================
-# CONFIG SECTIONS
-# ============================================================
+# -------------------------------------------------------------------------
+# Configuration sections
+# -------------------------------------------------------------------------
 
 GLOBAL_CFG = config.get("global", {})
 DATASET_CFG = config["dataset"]
@@ -115,12 +106,12 @@ ID_COL = DATASET_CFG["id_col"]
 LABEL_COL = DATASET_CFG["label_col"]
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+# -------------------------------------------------------------------------
+# General helpers
+# -------------------------------------------------------------------------
 
 def as_bool(value, default=False):
-    """Convert YAML/string values to bool."""
+    """Convert Boolean-like configuration values to bool."""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -129,7 +120,7 @@ def as_bool(value, default=False):
 
 
 def has_value(value):
-    """Return True only for real values, not YAML null/empty strings."""
+    """Return whether a configuration value is non-empty and non-null."""
     if value is None:
         return False
     if isinstance(value, str) and value.strip().lower() in {"", "none", "null", "nan", "na", "-"}:
@@ -138,15 +129,15 @@ def has_value(value):
 
 
 def run_command(cmd):
-    """Print and run a command without leaving orphan backslashes in optional args."""
+    """Log and execute a subprocess command, raising on failure."""
     printable = " ".join(shlex.quote(str(x)) for x in cmd)
     print(f"[CMD] {printable}")
     subprocess.run([str(x) for x in cmd], check=True)
 
 
-# ============================================================
-# FLAGS
-# ============================================================
+# -------------------------------------------------------------------------
+# Workflow flags
+# -------------------------------------------------------------------------
 
 REPRESENTATION_ENABLED = as_bool(REP_CFG.get("enabled", True), True)
 RUN_REPRESENTATION = as_bool(
@@ -160,9 +151,9 @@ RUN_REPRESENTATION = as_bool(
 ANALYSIS_ENABLED = as_bool(ANALYSIS_CFG.get("enabled", False), False)
 
 
-# ============================================================
-# PATHS
-# ============================================================
+# -------------------------------------------------------------------------
+# Path and representation helpers
+# -------------------------------------------------------------------------
 
 def model_alias():
     """Return a filesystem-friendly name for the representation."""
@@ -180,7 +171,7 @@ def representation_dir():
 
 
 def output_format():
-    """Representation output format for embedding outputs."""
+    """Return the configured representation output format."""
     return REP_CFG.get("output_format", "csv").lower()
 
 
@@ -203,14 +194,7 @@ def full_data_file():
 
 
 def analysis_dir():
-    """
-    Directory for embedding-space analysis.
-
-    Priority:
-    1. analysis.output_dir
-    2. global.analysis_root / dataset / method / alias
-    3. representation_dir / analysis
-    """
+    """Resolve the analysis directory using explicit and inferred paths."""
     if ANALYSIS_CFG.get("output_dir"):
         return ANALYSIS_CFG["output_dir"].rstrip("/")
 
@@ -223,7 +207,40 @@ def analysis_dir():
 
 def analysis_prefix():
     """Prefix used for analysis output files."""
-    return ANALYSIS_CFG.get("prefix", model_alias())
+    return ANALYSIS_CFG.get("prefix") or model_alias()
+
+
+def analysis_kind():
+    """Return the analysis required by the active representation method."""
+    method = representation_method()
+
+    if method == "sylphy_one_hot":
+        return "descriptor_euclidean"
+
+    if method == "sylphy_embedding":
+        return "embedding_cosine"
+
+    raise ValueError(f"Unsupported representation method for analysis: {method}")
+
+
+def analysis_script():
+    """Select the analysis script associated with the representation method."""
+    # Preserve compatibility with configurations that define one explicit script.
+    explicit_script = ANALYSIS_CFG.get("script")
+    if has_value(explicit_script):
+        return explicit_script
+
+    scripts = ANALYSIS_CFG.get("scripts", {})
+    script_key = analysis_kind()
+    selected_script = scripts.get(script_key)
+
+    if not has_value(selected_script):
+        raise ValueError(
+            f"No analysis script configured for '{script_key}'. Add "
+            f"analysis.scripts.{script_key} to config.yaml."
+        )
+
+    return selected_script
 
 
 def analysis_training_embeddings_file():
@@ -231,22 +248,29 @@ def analysis_training_embeddings_file():
 
 
 def analysis_percentiles_file():
-    return f"{analysis_dir()}/tables/{analysis_prefix()}_similarity_percentiles.csv"
+    if analysis_kind() == "descriptor_euclidean":
+        # Select the complementary-percentile table used by the downstream
+        # one-hot descriptor-reduction workflow.
+        suffix = "distance_reduction_thresholds"
+    else:
+        suffix = "similarity_percentiles"
+
+    return f"{analysis_dir()}/tables/{analysis_prefix()}_{suffix}.csv"
 
 
 def analysis_done_file():
     return f"{analysis_dir()}/analysis.done"
 
 
-# ============================================================
-# RULE ALL
-# ============================================================
+# -------------------------------------------------------------------------
+# Workflow targets
+# -------------------------------------------------------------------------
 
 def final_targets():
     targets = []
 
     if REPRESENTATION_ENABLED:
-        targets.extend([representation_file(), full_data_file()])
+        targets.append(full_data_file())
 
     if ANALYSIS_ENABLED:
         targets.append(analysis_done_file())
@@ -264,69 +288,29 @@ rule all:
         final_targets()
 
 
-# ============================================================
-# REPRESENT DATASET
-# ============================================================
+# -------------------------------------------------------------------------
+# Representation generation and data assembly
+# -------------------------------------------------------------------------
 
-rule represent_dataset:
-    input:
-        input_data=INPUT_DATA
-    output:
-        rep=representation_file(),
-        full_data=full_data_file()
-    params:
-        rep_dir=representation_dir(),
-        method=representation_method(),
-        model=REP_CFG.get("model", ""),
-        encoder=REP_CFG.get("encoder", "one_hot"),
-        device=REP_CFG.get("device", "cuda"),
-        precision=REP_CFG.get("precision", "fp16"),
-        batch_size=REP_CFG.get("batch_size", 16),
-        max_length=REP_CFG.get("max_length", None),
-        sequence_col=SEQUENCE_COL,
-        id_col=ID_COL,
-        label_col=LABEL_COL,
-        output_format=output_format(),
-        run_representation=RUN_REPRESENTATION,
-        enabled=REPRESENTATION_ENABLED,
-    run:
-        Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
+if REPRESENTATION_ENABLED and RUN_REPRESENTATION:
 
-        rep_path = Path(output.rep)
-        full_data_path = Path(output.full_data)
-
-        input_df = pd.read_csv(input.input_data)
-        required_cols = [params.sequence_col, params.id_col, params.label_col]
-        missing_cols = [col for col in required_cols if col not in input_df.columns]
-        if missing_cols:
-            raise ValueError(
-                f"Missing required columns in input data: {missing_cols}. "
-                f"Available columns: {input_df.columns.tolist()}"
-            )
-
-        # Reuse full_data only when both required outputs already exist.
-        # This avoids declaring success while Snakemake is still missing the representation file.
-        if rep_path.exists() and full_data_path.exists():
-            print(f"[INFO] Reusing existing representation: {output.rep}")
-            print(f"[INFO] Reusing existing full_data: {output.full_data}")
-            reused_df = pd.read_csv(output.full_data)
-            missing_cols = [col for col in required_cols if col not in reused_df.columns]
-            if missing_cols:
-                raise ValueError(
-                    f"Existing full_data file is missing required columns: {missing_cols}. "
-                    f"Available columns: {reused_df.columns.tolist()}"
-                )
-            return
-
-        # If the representation file does not exist, generate it only when allowed.
-        if not rep_path.exists():
-            if (not params.enabled) or (not params.run_representation):
-                raise FileNotFoundError(
-                    f"Representation file not found: {output.rep}. "
-                    f"To generate it, set representation.enabled: true and "
-                    f"representation.run_representation: true."
-                )
-
+    rule generate_representation:
+        input:
+            input_data=INPUT_DATA
+        output:
+            rep=representation_file()
+        params:
+            rep_dir=representation_dir(),
+            method=representation_method(),
+            model=REP_CFG.get("model", ""),
+            encoder=REP_CFG.get("encoder", "one_hot"),
+            device=REP_CFG.get("device", "cuda"),
+            precision=REP_CFG.get("precision", "fp16"),
+            batch_size=REP_CFG.get("batch_size", 16),
+            max_length=REP_CFG.get("max_length", None),
+            sequence_col=SEQUENCE_COL,
+        run:
+            Path(params.rep_dir).mkdir(parents=True, exist_ok=True)
             print(f"[INFO] Generating representation in: {params.rep_dir}")
 
             if params.method == "sylphy_one_hot":
@@ -365,49 +349,72 @@ rule represent_dataset:
             else:
                 raise ValueError(f"Unsupported representation method: {params.method}")
 
-        else:
-            print(f"[INFO] Reusing existing representation: {output.rep}")
 
-        # Build full_data.csv from the original dataset + representation.
-        if params.output_format == "csv" or params.method == "sylphy_one_hot":
-            rep_df = pd.read_csv(output.rep)
-        elif params.output_format == "parquet":
-            rep_df = pd.read_parquet(output.rep)
-        else:
-            raise ValueError(f"Unsupported output format: {params.output_format}")
+if REPRESENTATION_ENABLED:
 
-        if len(input_df) != len(rep_df):
-            raise ValueError(
-                f"Row mismatch between input ({len(input_df)}) and representation ({len(rep_df)})."
+    rule build_full_data:
+        input:
+            input_data=INPUT_DATA,
+            rep=representation_file()
+        output:
+            full_data=full_data_file()
+        params:
+            method=representation_method(),
+            output_format=output_format(),
+            sequence_col=SEQUENCE_COL,
+            id_col=ID_COL,
+            label_col=LABEL_COL,
+        run:
+            input_df = pd.read_csv(input.input_data)
+            required_cols = [params.sequence_col, params.id_col, params.label_col]
+            missing_cols = [col for col in required_cols if col not in input_df.columns]
+            if missing_cols:
+                raise ValueError(
+                    f"Missing required columns in input data: {missing_cols}. "
+                    f"Available columns: {input_df.columns.tolist()}"
+                )
+
+            if params.output_format == "csv" or params.method == "sylphy_one_hot":
+                rep_df = pd.read_csv(input.rep)
+            elif params.output_format == "parquet":
+                rep_df = pd.read_parquet(input.rep)
+            else:
+                raise ValueError(f"Unsupported output format: {params.output_format}")
+
+            if len(input_df) != len(rep_df):
+                raise ValueError(
+                    f"Row mismatch between input ({len(input_df)}) and "
+                    f"representation ({len(rep_df)})."
+                )
+
+            duplicated_cols = [col for col in rep_df.columns if col in input_df.columns]
+            if duplicated_cols:
+                rep_df = rep_df.drop(columns=duplicated_cols)
+
+            full_df = pd.concat(
+                [input_df.reset_index(drop=True), rep_df.reset_index(drop=True)],
+                axis=1,
             )
-
-        duplicated_cols = [col for col in rep_df.columns if col in input_df.columns]
-        if duplicated_cols:
-            rep_df = rep_df.drop(columns=duplicated_cols)
-
-        full_df = pd.concat(
-            [input_df.reset_index(drop=True), rep_df.reset_index(drop=True)],
-            axis=1,
-        )
-        full_df = full_df.loc[:, ~full_df.columns.duplicated()]
-        full_df.to_csv(output.full_data, index=False)
-        print(f"[INFO] Saved full_data: {output.full_data}")
+            full_df = full_df.loc[:, ~full_df.columns.duplicated()]
+            full_df.to_csv(output.full_data, index=False)
+            print(f"[INFO] Saved full_data: {output.full_data}")
 
 
-# ============================================================
-# ANALYSE EMBEDDING SPACE
-# ============================================================
+# -------------------------------------------------------------------------
+# Representation-space analysis
+# -------------------------------------------------------------------------
 
-rule analyse_embedding_space:
+rule analyse_representation_space:
     input:
-        full_data=full_data_file()
+        full_data=full_data_file(),
+        script=analysis_script()
     output:
         npy=analysis_training_embeddings_file(),
         percentiles=analysis_percentiles_file(),
         done=analysis_done_file()
     params:
         output_dir=analysis_dir(),
-        script=ANALYSIS_CFG.get("script", ""),
+        analysis_kind=analysis_kind(),
         sequence_col=SEQUENCE_COL,
         label_col=LABEL_COL,
         id_col=ID_COL,
@@ -420,17 +427,22 @@ rule analyse_embedding_space:
         umap_min_dist=ANALYSIS_CFG.get("umap_min_dist", 0.1),
         umap_metric=ANALYSIS_CFG.get("umap_metric", "euclidean"),
         scaling_strategy=ANALYSIS_CFG.get("scaling_strategy", "none"),
+        working_memory_mb=ANALYSIS_CFG.get("working_memory_mb", 512),
+        n_jobs=ANALYSIS_CFG.get("n_jobs", 1),
+        plot_sample_size=ANALYSIS_CFG.get("plot_sample_size", 200000),
+        pairwise_csv_chunk_size=ANALYSIS_CFG.get("pairwise_csv_chunk_size", 500000),
+        save_pairwise_values=as_bool(ANALYSIS_CFG.get("save_pairwise_values", True), True),
     run:
-        if not params.script:
+        if params.analysis_kind == "descriptor_euclidean" and params.scaling_strategy != "none":
             raise ValueError(
-                "analysis.script is empty. Add the path to embedding_analysis_space.py "
-                "or set analysis.enabled: false."
+                "Raw one-hot Euclidean analysis requires "
+                "analysis.scaling_strategy: 'none'."
             )
 
         Path(params.output_dir).mkdir(parents=True, exist_ok=True)
 
         cmd = [
-            "python", params.script,
+            "python", input.script,
             "--emb-train", input.full_data,
             "--output-dir", params.output_dir,
             "--label-col", params.label_col,
@@ -446,6 +458,17 @@ rule analyse_embedding_space:
             "--umap-metric", params.umap_metric,
             "--scaling-strategy", params.scaling_strategy,
         ]
+
+        if params.analysis_kind == "descriptor_euclidean":
+            cmd.extend([
+                "--working-memory-mb", str(params.working_memory_mb),
+                "--n-jobs", str(params.n_jobs),
+                "--plot-sample-size", str(params.plot_sample_size),
+                "--pairwise-csv-chunk-size", str(params.pairwise_csv_chunk_size),
+            ])
+
+            if not params.save_pairwise_values:
+                cmd.append("--skip-pairwise-values")
 
         run_command(cmd)
         Path(output.done).touch()
