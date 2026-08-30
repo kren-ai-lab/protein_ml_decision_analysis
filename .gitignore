@@ -211,3 +211,6 @@ processed_dataset/
 results/
 .snakemake/
 numerical_representation_data/
+
+# LibreOffice lock files
+.~lock.*#
