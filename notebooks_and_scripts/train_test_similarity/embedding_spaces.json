@@ -1,0 +1,51 @@
+{
+  "spaces": {
+    "ankh2_ext1": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/ankh2_ext1/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    },
+    "esm2_t6_8M_UR50D": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/esm2_t6_8M_UR50D/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    },
+    "esmc_300m": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/esmc_300m/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    },
+    "mistral_Prot_v1_134M": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/mistral_Prot_v1_134M/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    },
+    "prot_bert": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/prot_bert/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    },
+    "prot_t5_xl_uniref50": {
+      "path": "../../numerical_representation_data/antioxidant_proteins/sylphy_embedding/prot_t5_xl_uniref50/full_data.csv",
+      "metric": "cosine",
+      "id_col": "id",
+      "split_id_col": "id",
+      "feature_prefix": "p_"
+    }
+  },
+  "config_representation_aliases": [
+    "onehot"
+  ],
+  "config_split_space_overrides": {}
+}
+
