@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Snakemake](https://img.shields.io/badge/Snakemake-9.19.0-green.svg)](https://snakemake.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21709987-blue?style=flat-square)](https://doi.org/10.5281/zenodo.21709987)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22134948-blue?style=flat-square)](https://doi.org/10.5281/zenodo.22134948)
 
 
 Nicole Soto-García<sup>1</sup>, Norma Murillo-Acevedo<sup>1</sup>, Julián García-Vinuesa<sup>1</sup>, Ana Luisa Islas-Ávila<sup>2</sup>, Mehdi D. Davari<sup>3</sup>, Leandro Murgas-Saavedra<sup>1</sup>, Ahmed Hassanin<sup>3,4</sup>, Karen Oróstica<sup>5</sup>, Jorge González-Puelma<sup>6,7</sup>, Marcelo Navarrete<sup>6,7</sup>, Alicia Martínez-Rebollar<sup>2</sup>, Roberto Uribe-Paredes<sup>1</sup>, Frederic Cadet<sup>8</sup>, and David Medina-Ortiz<sup>1,3,*</sup>.<br>
