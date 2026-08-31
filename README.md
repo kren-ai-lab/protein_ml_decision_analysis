@@ -825,7 +825,7 @@ The complete workflow generates different types of artefacts, including:
 
 These outputs are preserved after workflow execution and can be reused by downstream workflows without repeating previous computational steps.
 
-Scripts, workflow definitions, configurations, summary tables, and lightweight diagnostic outputs are retained in the repository. Larger intermediate datasets and complete generated outputs associated with the released analyses are provided through the archived research materials at [https://doi.org/10.5281/zenodo.21709987](https://doi.org/10.5281/zenodo.21709987).
+Scripts, workflow definitions, configurations, summary tables, and lightweight diagnostic outputs are retained in the repository. Larger intermediate datasets and complete generated outputs associated with the released analyses are provided through the archived research materials at [https://doi.org/10.5281/zenodo.22134948](https://doi.org/10.5281/zenodo.22134948).
 
 ---
 
@@ -950,8 +950,7 @@ If you use this workflow in your research, please cite the associated publicatio
 
 ## Software
 
-Soto-García, N., Murillo-Acevedo, N., García-Vinuesa, J. A., Islas-Ávila, A. L., Davari, M. D., Murgas-Saavedra, L., Hassanin, A., Oróstica, K., González-Puelma, J., Navarrete, M., Martínez-Rebollar, A., Uribe-Paredes, R., Cadet, F., & Medina-Ortiz, D. (2026). *Data-Centric Evaluation of Protein Function Prediction Pipelines* (Version 0.1.0). Zenodo. https://doi.org/10.5281/zenodo.21709987
-
+Soto-García, N., Murillo-Acevedo, N., García-Vinuesa, J. A., Islas-Ávila, A. L., Davari, M. D., Murgas-Saavedra, L., Hassanin, A., Oróstica, K., González-Puelma, J., Navarrete, M., Martínez-Rebollar, A., Uribe-Paredes, R., Cadet, F., & Medina-Ortiz, D. (2026). *Data-Centric Evaluation of Protein Function Prediction Pipelines* (Version 0.2.0). Zenodo. [https://doi.org/10.5281/zenodo.22134948](https://doi.org/10.5281/zenodo.22134948)
 
 # License
 
